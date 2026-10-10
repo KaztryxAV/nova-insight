@@ -811,6 +811,13 @@ async def update_account_profile(req: AccountUpdate, request: Request):
             }
     raise HTTPException(status_code=404, detail="User account not found")
 
+class ProjectItem(BaseModel):
+    id: Optional[str] = None
+    name: str
+    description: Optional[str] = ""
+    instructions: Optional[str] = ""
+    files: Optional[List[Dict[str, Any]]] = None
+
 # ----------------- Projects Endpoints -----------------
 @app.get("/api/projects")
 async def get_projects():
@@ -867,6 +874,11 @@ async def delete_project(project_id: str):
     projects = [p for p in projects if p["id"] != project_id]
     save_projects(projects)
     return {"success": True, "message": "Project deleted"}
+
+class ImageGenRequest(BaseModel):
+    prompt: str
+    seed: Optional[int] = None
+    aspect_ratio: Optional[str] = "1:1"
 
 # ----------------- Image Generation Endpoint -----------------
 @app.post("/api/generate-image")
