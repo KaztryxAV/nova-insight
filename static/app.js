@@ -265,6 +265,7 @@
     try { initSplashScreen(); } catch (e) { console.error('initSplashScreen error', e); }
     try { loadSettings(); } catch (e) { console.error('loadSettings error', e); }
     try { applyDisplaySettings(); initThinkingUI(); } catch (e) { console.error('display settings error', e); }
+    try { initComposerLayout(); } catch (e) { console.error('composer layout error', e); }
     try { loadTheme(); } catch (e) { console.error('loadTheme error', e); }
     try { loadProjects(); } catch (e) { console.error('loadProjects error', e); }
     try { setupMarkdownRenderer(); } catch (e) { console.error('setupMarkdownRenderer error', e); }
@@ -801,6 +802,8 @@
   function selectConversation(id) {
     // A reply that is still being written keeps going in the background when you switch chats.
     activeConversationId = id;
+    // On phones the sidebar is a drawer: close it once a chat is chosen (and keep it closed when the app opens).
+    if (window.innerWidth <= 768) appLayout.classList.add('sidebar-collapsed');
     renderSidebarHistory();
     renderChatFeed();
     messageInput.focus();
@@ -1160,7 +1163,7 @@
         close();
       });
     });
-    document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) close(); });
+    document.addEventListener('click', (e) => { if (!wrap.contains(e.target) && !menu.contains(e.target)) close(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   }
 
@@ -2061,8 +2064,32 @@
 
   // --- Utilities ---
   function adjustTextareaHeight() {
+    // Cap the box to a share of the visible screen so it can never swallow the page (e.g. with the phone keyboard open).
+    const vh = (window.visualViewport ? window.visualViewport.height : window.innerHeight) || 700;
+    const cap = Math.max(96, Math.min(200, Math.floor(vh * 0.28)));
+    messageInput.style.maxHeight = cap + 'px';
     messageInput.style.height = 'auto';
-    messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
+    const needed = messageInput.scrollHeight;
+    messageInput.style.height = Math.min(needed, cap) + 'px';
+    messageInput.style.overflowY = needed > cap ? 'auto' : 'hidden';
+  }
+
+  // Keeps the message box sensible when the keyboard opens, the phone rotates, or the tool strip scrolls.
+  function initComposerLayout() {
+    const tools = document.getElementById('inputTools');
+    const updateFade = () => {
+      if (!tools) return;
+      const overflow = tools.scrollWidth > tools.clientWidth + 2;
+      tools.classList.toggle('fade-right', overflow && tools.scrollLeft + tools.clientWidth < tools.scrollWidth - 4);
+      tools.classList.toggle('fade-left', overflow && tools.scrollLeft > 4);
+    };
+    if (tools) tools.addEventListener('scroll', updateFade, { passive: true });
+    const onResize = () => { adjustTextareaHeight(); updateFade(); };
+    window.addEventListener('resize', onResize);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
+    messageInput.addEventListener('focus', () => setTimeout(onResize, 250));
+    messageInput.addEventListener('blur', () => setTimeout(onResize, 100));
+    setTimeout(onResize, 300);
   }
 
   function updateSendButtonState() {
