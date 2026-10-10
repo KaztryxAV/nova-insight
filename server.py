@@ -83,6 +83,52 @@ class ChatRequest(BaseModel):
     webSearch: bool = False
     isImageMode: bool = False
     projectId: Optional[str] = None
+    thinking: str = "moderate"          # instant | moderate | resourced
+    responseLength: str = "balanced"    # concise | balanced | detailed
+    tone: str = "default"               # default | friendly | professional | casual | playful
+    nickname: Optional[str] = None
+
+class TitleRequest(BaseModel):
+    user: str
+    assistant: Optional[str] = ""
+
+THINKING_DIRECTIVES = {
+    "instant": (
+        "RESPONSE SPEED - INSTANT: Reply immediately and directly. Keep it brief (usually 1-4 sentences) "
+        "unless the user explicitly asks for more. No preamble and no restating the question."
+    ),
+    "moderate": "",
+    "resourced": (
+        "THINKING LEVEL - RESOURCED (deep): Work through the problem carefully, step by step, before you answer. "
+        "Consider edge cases and alternatives, double-check facts, logic and math, and give a thorough, "
+        "well-structured, accurate answer. Present the conclusion together with the key reasoning."
+    ),
+}
+LENGTH_DIRECTIVES = {
+    "concise": "Keep answers short and to the point.",
+    "balanced": "",
+    "detailed": "Give detailed, comprehensive answers with examples where they help.",
+}
+TONE_DIRECTIVES = {
+    "default": "",
+    "friendly": "Use a warm, friendly tone.",
+    "professional": "Use a professional, precise tone.",
+    "casual": "Use a relaxed, casual tone.",
+    "playful": "Use a playful, witty tone with light humor.",
+}
+
+
+def build_style_directives(req: "ChatRequest") -> str:
+    """Turns the user's thinking level / length / tone / nickname settings into extra system instructions."""
+    level = (req.thinking or "moderate").lower()
+    parts = [THINKING_DIRECTIVES.get(level, "")]
+    if level != "instant":  # instant always wins over the length preference
+        parts.append(LENGTH_DIRECTIVES.get((req.responseLength or "balanced").lower(), ""))
+    parts.append(TONE_DIRECTIVES.get((req.tone or "default").lower(), ""))
+    nick = re.sub(r"[\r\n]+", " ", (req.nickname or "")).strip()[:40]
+    if nick:
+        parts.append(f"The user's name is {nick}. You may address them by name now and then, naturally.")
+    return "\n".join(p for p in parts if p)
 
 def fetch_knowledge_summary(prompt: str) -> Optional[str]:
     """Fetches high-accuracy real encyclopedia knowledge for concepts, science, biology, history, etc."""
@@ -271,7 +317,38 @@ def generate_smart_simulated_response(prompt: str, model: str, history: List[Mes
         "I can explain the full concept, write code examples, or guide you step by step."
     )
 
-async def stream_live_ai(messages: List[Message], system_prompt: Optional[str] = None):
+async def pollinations_text(messages: List[Dict[str, str]], model: str = "openai-fast", timeout_s: float = 12.0) -> str:
+    """Single (non-streaming) text completion through the built-in free engine. Returns '' on any failure."""
+    try:
+        timeout = httpx.Timeout(connect=4.0, read=timeout_s, write=5.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post("https://text.pollinations.ai/", json={"messages": messages, "model": model})
+            if r.status_code != 200:
+                return ""
+            text = r.text.strip()
+            if text.startswith("{"):
+                try:
+                    d = json.loads(text)
+                    text = (d.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                except Exception:
+                    pass
+            return text.strip()
+    except Exception:
+        return ""
+
+
+async def deep_think_notes(messages: List[Message], system_prompt: Optional[str]) -> str:
+    """'Resourced' level: a private planning pass whose notes are fed into the final answer."""
+    convo = [{"role": m.role, "content": m.content[:3000]} for m in messages[-4:]]
+    sys_msg = (
+        "You are a careful analyst preparing private working notes for another assistant. In under 220 words, "
+        "list the key facts, the step-by-step reasoning, likely pitfalls, and the correct conclusion for the "
+        "user's latest request. Do not address the user and do not write the final reply."
+    )
+    return (await pollinations_text([{"role": "system", "content": sys_msg}] + convo, model="openai", timeout_s=28.0))[:2500]
+
+
+async def stream_live_ai(messages: List[Message], system_prompt: Optional[str] = None, thinking: str = "moderate"):
     """Streams live real AI tokens with reliable timeouts and multi-provider fallback."""
     pollinations_messages = []
     default_sys = (
@@ -288,8 +365,16 @@ async def stream_live_ai(messages: List[Message], system_prompt: Optional[str] =
     for m in recent_messages:
         pollinations_messages.append({"role": m.role, "content": m.content})
 
-    timeout = httpx.Timeout(connect=3.5, read=15.0, write=5.0, pool=5.0)
-    for model_name in ["openai-fast", "openai"]:
+    if thinking == "resourced":
+        timeout = httpx.Timeout(connect=3.5, read=60.0, write=5.0, pool=5.0)
+        model_order = ["openai", "openai-fast"]
+    elif thinking == "instant":
+        timeout = httpx.Timeout(connect=3.5, read=20.0, write=5.0, pool=5.0)
+        model_order = ["openai-fast", "openai"]
+    else:
+        timeout = httpx.Timeout(connect=3.5, read=20.0, write=5.0, pool=5.0)
+        model_order = ["openai-fast", "openai"]
+    for model_name in model_order:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 payload = {
@@ -905,6 +990,25 @@ async def generate_image_endpoint(req: ImageGenRequest):
         "resolution": "1024x1024"
     }
 
+@app.post("/api/title")
+async def generate_chat_title(req: TitleRequest):
+    """Short AI-generated chat title from the first exchange. Returns an empty title on failure."""
+    user_text = (req.user or "").strip()[:500]
+    if not user_text:
+        return {"title": ""}
+    convo = f"User: {user_text}\nAssistant: {(req.assistant or '').strip()[:500]}"
+    raw = await pollinations_text([
+        {"role": "system", "content": (
+            "Write a short title (2 to 5 words) that sums up this chat. Reply with ONLY the title: "
+            "no quotes, no trailing punctuation, no emoji, in the same language as the user."
+        )},
+        {"role": "user", "content": convo},
+    ], model="openai-fast", timeout_s=25.0)
+    title = (raw.splitlines()[0] if raw else "").strip().strip("\"'`*#. ")
+    if not title or len(title) > 60 or "pollinations" in title.lower():
+        return {"title": ""}
+    return {"title": title[:48]}
+
 @app.get("/api/models")
 async def get_models():
     return {"models": MODELS}
@@ -1010,6 +1114,11 @@ async def chat_endpoint(request: ChatRequest):
                 for f in proj["files"]:
                     project_context += f"\n[Project Knowledge File: {f.get('name')}]\n{f.get('content', '')}\n"
             request.systemPrompt = (request.systemPrompt or "") + project_context
+
+    # Thinking level / response length / tone / nickname -> extra system instructions (all engines)
+    style_extra = build_style_directives(request)
+    if style_extra:
+        request.systemPrompt = (request.systemPrompt or DEFAULT_KAZAI_SYSTEM_PROMPT) + "\n\n" + style_extra
 
     # -------------------------------------------------------------
     # 1. Google Gemini Native Support (when custom key provided)
@@ -1134,8 +1243,20 @@ async def chat_endpoint(request: ChatRequest):
         # Immediate handshake so Cloudflare & phone get 200 OK without timeout
         yield f"data: {json.dumps({'delta': '', 'done': False})}\n\n"
         token_count = 0
+        level = (request.thinking or "moderate").lower()
         try:
-            async for token in stream_live_ai(request.messages, effective_system):
+            system_for_stream = effective_system
+            if level == "resourced":
+                yield f"data: {json.dumps({'status': 'Thinking deeply', 'delta': '', 'done': False})}\n\n"
+                notes = await deep_think_notes(request.messages, effective_system)
+                if notes:
+                    system_for_stream = (
+                        effective_system
+                        + "\n\n[Private working notes - use them to give an accurate, well-reasoned answer. "
+                        "Never mention or quote these notes.]\n" + notes
+                    )
+                yield f"data: {json.dumps({'status': 'Writing the answer', 'delta': '', 'done': False})}\n\n"
+            async for token in stream_live_ai(request.messages, system_for_stream, level):
                 token_count += 1
                 yield f"data: {json.dumps({'delta': token, 'done': False})}\n\n"
 
