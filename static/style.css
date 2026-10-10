@@ -2825,3 +2825,83 @@ input, textarea {
   .nova-word.nova-fade { animation: none; opacity: 1; filter: none; }
   .welcome-logo, .message-row.assistant.streaming .assistant-avatar { animation: none; }
 }
+
+
+/* ==========================================================================
+   Nova Insight start screen (name -> password)
+   ========================================================================== */
+.auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow-y: auto;
+  background:
+    radial-gradient(900px 500px at 15% 0%, rgba(43, 143, 223, 0.12), transparent 60%),
+    radial-gradient(800px 500px at 90% 100%, rgba(20, 168, 127, 0.12), transparent 60%),
+    var(--bg-main, #ffffff);
+  color: var(--text-primary, #0d0d0d);
+}
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+  padding: 34px 28px 24px;
+  border-radius: 24px;
+  background: var(--bg-main, #ffffff);
+  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 24px 60px -20px rgba(15, 40, 80, 0.25);
+  animation: authRise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes authRise { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
+.auth-logo { width: 84px; height: 84px; border-radius: 20px; box-shadow: 0 10px 28px -8px rgba(43, 127, 255, 0.45); }
+.auth-title { margin: 16px 0 4px; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; }
+.auth-sub { margin-bottom: 20px; color: var(--text-secondary, #676767); font-size: 0.95rem; line-height: 1.4; min-height: 1.4em; }
+.auth-step { margin-bottom: 10px; text-align: left; }
+.auth-input {
+  width: 100%;
+  padding: 13px 14px;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text-primary, #0d0d0d);
+  background: var(--bg-input, #f4f4f4);
+  border: 1.5px solid transparent;
+  border-radius: 12px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.auth-input:focus { border-color: #2b7fff; box-shadow: 0 0 0 4px rgba(43, 127, 255, 0.15); }
+.auth-pass-wrap { position: relative; }
+.auth-pass-wrap .auth-input { padding-right: 64px; }
+.auth-eye {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  padding: 6px 10px; border: 0; border-radius: 8px; cursor: pointer;
+  background: transparent; color: var(--text-secondary, #676767); font: inherit; font-size: 0.8rem; font-weight: 600;
+}
+.auth-eye:hover { background: var(--bg-hover, #ececec); }
+.auth-chip {
+  display: inline-block; margin-bottom: 10px; padding: 4px 12px; border-radius: 999px;
+  background: rgba(43, 127, 255, 0.1); color: #2b7fff; font-size: 0.85rem; font-weight: 600;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.auth-msg { min-height: 1.3em; margin: 4px 0 8px; font-size: 0.85rem; color: #ef4444; text-align: left; }
+.auth-msg.info { color: var(--text-secondary, #676767); }
+.auth-btn {
+  width: 100%; padding: 13px; border: 0; border-radius: 12px; cursor: pointer;
+  font: inherit; font-size: 1rem; font-weight: 600; color: #fff;
+  background: linear-gradient(135deg, #2b7fff, #14a87f);
+  box-shadow: 0 10px 24px -10px rgba(43, 127, 255, 0.6);
+  transition: transform 0.12s ease, filter 0.15s ease, opacity 0.15s ease;
+}
+.auth-btn:hover { filter: brightness(1.05); }
+.auth-btn:active { transform: scale(0.985); }
+.auth-btn:disabled { opacity: 0.6; cursor: default; }
+.auth-back {
+  margin-top: 12px; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-secondary, #676767); font: inherit; font-size: 0.85rem;
+}
+.auth-back:hover { color: var(--text-primary, #0d0d0d); text-decoration: underline; }
+.auth-credit { margin-top: 20px; font-size: 0.78rem; color: var(--text-muted, #8f8f8f); }
