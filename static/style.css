@@ -2905,3 +2905,76 @@ input, textarea {
 }
 .auth-back:hover { color: var(--text-primary, #0d0d0d); text-decoration: underline; }
 .auth-credit { margin-top: 20px; font-size: 0.78rem; color: var(--text-muted, #8f8f8f); }
+
+
+/* ==========================================================================
+   Settings in the top-left corner
+   ========================================================================== */
+.sidebar-header { gap: 6px; }
+.settings-corner-btn { flex: 0 0 auto; }
+.settings-top-btn { display: none; }
+.app-layout.sidebar-collapsed .settings-top-btn { display: inline-flex; }
+
+/* ==========================================================================
+   Thinking level picker (Instant / Moderate / Resourced)
+   ========================================================================== */
+.think-wrap { position: relative; display: inline-flex; }
+.think-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border-subtle); background: transparent;
+  color: var(--text-secondary); font: inherit; font-size: 0.8rem; font-weight: 600;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.think-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.think-wrap.open .think-btn { border-color: #2b7fff; color: var(--text-primary); }
+.think-btn-icon { font-size: 0.95rem; line-height: 1; }
+.think-menu {
+  position: absolute; right: 0; bottom: calc(100% + 10px); width: 250px; z-index: 60;
+  padding: 6px; border-radius: 14px;
+  background: var(--bg-main); border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-dropdown);
+  animation: thinkMenuIn 0.16s ease both;
+}
+@keyframes thinkMenuIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.think-menu-title { padding: 6px 10px 4px; font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.think-opt {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
+  border: 0; border-radius: 10px; background: transparent; cursor: pointer; text-align: left;
+  color: var(--text-primary); font: inherit;
+}
+.think-opt:hover { background: var(--bg-hover); }
+.think-opt.active { background: rgba(43, 127, 255, 0.12); }
+.think-ico { font-size: 1.15rem; width: 24px; text-align: center; }
+.think-txt { display: flex; flex-direction: column; }
+.think-txt strong { font-size: 0.9rem; }
+.think-txt small { font-size: 0.75rem; color: var(--text-secondary); }
+@media (max-width: 520px) {
+  .think-btn-label { display: none; }
+  .think-btn { padding: 6px 8px; }
+}
+
+/* "Thinking..." status while waiting for the first words */
+.think-status { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 0.95rem; font-weight: 500; animation: thinkPulse 1.6s ease-in-out infinite; }
+.think-dots { display: inline-flex; gap: 3px; }
+.think-dots i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.3; animation: thinkDot 1.2s infinite; }
+.think-dots i:nth-child(2) { animation-delay: 0.2s; }
+.think-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes thinkDot { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+@keyframes thinkPulse { 0%, 100% { opacity: 0.65; } 50% { opacity: 1; } }
+
+/* ==========================================================================
+   Display settings (text size, chat width, compact)
+   ========================================================================== */
+body.fs-small .message-bubble { font-size: 13.5px !important; }
+body.fs-large .message-bubble { font-size: 17px !important; }
+body.fs-xlarge .message-bubble { font-size: 19px !important; }
+body.cw-narrow .messages-container, body.cw-narrow .input-box-container { max-width: 660px; }
+body.cw-wide .messages-container, body.cw-wide .input-box-container { max-width: 1120px; }
+body.compact-chat .message-row { padding-top: 6px; padding-bottom: 6px; margin-bottom: 0; }
+body.compact-chat .message-bubble.assistant p { margin-bottom: 6px; }
+
+/* keep the New chat label on one line now that the settings gear sits beside it */
+.sidebar-header .new-chat-btn { white-space: nowrap; min-width: 0; }
+.sidebar-header .new-chat-btn .shortcut-tag { display: none; }
+
