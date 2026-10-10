@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#ffffff">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -312,13 +312,7 @@
           </div>
 
           <div class="input-row">
-            <!-- Attachment Button -->
             <input type="file" id="fileInput" style="display: none;" accept="image/*,.txt,.py,.js,.html,.css,.json,.md,.csv">
-            <button class="input-action-btn" id="attachFileBtn" title="Attach file or image">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-              </svg>
-            </button>
 
             <!-- Auto-expanding Textarea -->
             <textarea 
@@ -328,28 +322,19 @@
               autofocus
             ></textarea>
 
-            <div class="input-right-actions">
+            <!-- Tool buttons: scroll sideways on small screens -->
+            <div class="input-tools" id="inputTools">
+            <button class="input-action-btn" id="attachFileBtn" title="Attach file or image">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
+            </button>
               <!-- Thinking level: Instant / Moderate / Resourced -->
               <div class="think-wrap" id="thinkWrap">
                 <button type="button" class="think-btn" id="thinkBtn" title="Thinking level" aria-haspopup="true">
                   <span class="think-btn-icon" id="thinkBtnIcon">🧠</span>
                   <span class="think-btn-label" id="thinkBtnLabel">Moderate</span>
                 </button>
-                <div class="think-menu" id="thinkMenu" style="display: none;">
-                  <div class="think-menu-title">Thinking level</div>
-                  <button type="button" class="think-opt" data-level="instant">
-                    <span class="think-ico">⚡</span>
-                    <span class="think-txt"><strong>Instant</strong><small>Fastest. Short, direct answers.</small></span>
-                  </button>
-                  <button type="button" class="think-opt" data-level="moderate">
-                    <span class="think-ico">🧠</span>
-                    <span class="think-txt"><strong>Moderate</strong><small>Balanced speed and depth.</small></span>
-                  </button>
-                  <button type="button" class="think-opt" data-level="resourced">
-                    <span class="think-ico">🔬</span>
-                    <span class="think-txt"><strong>Resourced</strong><small>Deep reasoning. Takes longer.</small></span>
-                  </button>
-                </div>
               </div>
 
               <!-- Photo Generation Mode Toggle -->
@@ -380,6 +365,9 @@
                 </svg>
               </button>
 
+            </div>
+
+            <div class="input-right-actions">
               <!-- Send / Stop Button -->
               <button class="send-btn" id="sendBtn" title="Send message" disabled>
                 <!-- Arrow Send Icon -->
@@ -392,6 +380,22 @@
                 </svg>
               </button>
             </div>
+          </div>
+          <!-- Thinking level menu (lives outside the scrolling tool strip so it is never clipped) -->
+          <div class="think-menu" id="thinkMenu" style="display: none;">
+            <div class="think-menu-title">Thinking level</div>
+            <button type="button" class="think-opt" data-level="instant">
+              <span class="think-ico">⚡</span>
+              <span class="think-txt"><strong>Instant</strong><small>Fastest. Short, direct answers.</small></span>
+            </button>
+            <button type="button" class="think-opt" data-level="moderate">
+              <span class="think-ico">🧠</span>
+              <span class="think-txt"><strong>Moderate</strong><small>Balanced speed and depth.</small></span>
+            </button>
+            <button type="button" class="think-opt" data-level="resourced">
+              <span class="think-ico">🔬</span>
+              <span class="think-txt"><strong>Resourced</strong><small>Deep reasoning. Takes longer.</small></span>
+            </button>
           </div>
         </div>
 
