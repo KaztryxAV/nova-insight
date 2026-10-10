@@ -9,7 +9,7 @@
   const STORAGE_KEYS = {
     CONVERSATIONS: 'chatgpt_conversations',
     SETTINGS: 'chatgpt_settings',
-    THEME: 'chatgpt_theme',
+    THEME: 'nova_theme_v2',
     CURRENT_MODEL: 'chatgpt_current_model',
     ACCOUNT: 'kazai_user_account',
     PROJECTS: 'kazai_projects',
@@ -30,11 +30,13 @@
   let activeSpeechUtterance = null;
 
   let userAccount = {
-    name: 'KaztryxAV',
-    username: 'kaztryxav',
-    avatar: '👑',
-    hasPassword: true,
-    savedPassword: 'password123'
+    authenticated: false,
+    isLoggedIn: false,
+    id: null,
+    name: '',
+    username: '',
+    avatar: '👤',
+    isCreator: false
   };
 
   let projects = [];
@@ -48,7 +50,7 @@
     baseUrl: '',
     temperature: 0.7,
     systemPrompt: '',
-    theme: 'dark',
+    theme: 'light',
     voicePreset: 'studio',
     voiceURI: '',
     voicePitch: 1.0,
@@ -252,9 +254,7 @@
     try { initSplashScreen(); } catch (e) { console.error('initSplashScreen error', e); }
     try { loadSettings(); } catch (e) { console.error('loadSettings error', e); }
     try { loadTheme(); } catch (e) { console.error('loadTheme error', e); }
-    try { loadUserAccount(); } catch (e) { console.error('loadUserAccount error', e); }
     try { loadProjects(); } catch (e) { console.error('loadProjects error', e); }
-    try { loadConversations(); } catch (e) { console.error('loadConversations error', e); }
     try { setupMarkdownRenderer(); } catch (e) { console.error('setupMarkdownRenderer error', e); }
     try { setupSpeechRecognition(); } catch (e) { console.error('setupSpeechRecognition error', e); }
     try { attachEventListeners(); } catch (e) { console.error('attachEventListeners error', e); }
@@ -262,15 +262,7 @@
     try { fetchTunnelStatus(); } catch (e) { console.error('fetchTunnelStatus error', e); }
     try { initConnectionHealthHeartbeat(); } catch (e) { console.error('initConnectionHealthHeartbeat error', e); }
 
-    try {
-      if (conversations.length > 0) {
-        selectConversation(conversations[0].id);
-      } else {
-        createNewConversation();
-      }
-    } catch (e) {
-      console.error('Initial conversation error', e);
-    }
+    try { startAuthFlow(); } catch (e) { console.error('startAuthFlow error', e); }
   }
 
   function initSplashScreen() {
@@ -303,7 +295,7 @@
 
   // --- Theme Management ---
   function loadTheme() {
-    const savedTheme = localStorage.getItem(STORAGE_KEYS.THEME) || 'dark';
+    const savedTheme = localStorage.getItem(STORAGE_KEYS.THEME) || 'light';
     applyTheme(savedTheme);
   }
 
@@ -397,7 +389,7 @@
     if (settingSystemPrompt) settingSystemPrompt.value = settings.systemPrompt || '';
 
     // Theme cards in settings
-    const activeTheme = settings.theme || localStorage.getItem(STORAGE_KEYS.THEME) || 'dark';
+    const activeTheme = settings.theme || localStorage.getItem(STORAGE_KEYS.THEME) || 'light';
     if (settingsThemeDark && settingsThemeLight && settingsThemeSystem) {
       settingsThemeDark.classList.toggle('active', activeTheme === 'dark');
       settingsThemeLight.classList.toggle('active', activeTheme === 'light');
@@ -1923,6 +1915,194 @@
       .replace(/'/g, '&#039;');
   }
 
+  // --- Start screen: name first, then password (no guest mode) ---
+  let sessionStarted = false;
+  let authMode = 'name'; // 'name' | 'login' | 'create'
+  let authName = '';
+  let authBusy = false;
+
+  // Chats are kept per account on this device (the original device chats belong to the creator).
+  function scopeStorageToUser(acc) {
+    if (!acc || !acc.id) return;
+    const base = 'chatgpt_conversations';
+    const key = base + ':' + acc.id;
+    try {
+      if (!localStorage.getItem(key) && acc.isCreator && localStorage.getItem(base)) {
+        localStorage.setItem(key, localStorage.getItem(base));
+      }
+    } catch (e) {}
+    STORAGE_KEYS.CONVERSATIONS = key;
+  }
+
+  function startSession() {
+    if (sessionStarted) return;
+    sessionStarted = true;
+    scopeStorageToUser(userAccount);
+    try { loadConversations(); } catch (e) { console.error('loadConversations error', e); }
+    try {
+      if (conversations.length > 0) {
+        selectConversation(conversations[0].id);
+      } else {
+        createNewConversation();
+      }
+    } catch (e) {
+      console.error('Initial conversation error', e);
+    }
+    updateUserAccountUI();
+  }
+
+  function authEls() {
+    return {
+      gate: document.getElementById('authGate'),
+      form: document.getElementById('authForm'),
+      sub: document.getElementById('authSub'),
+      stepName: document.getElementById('authStepName'),
+      stepPass: document.getElementById('authStepPass'),
+      nameInput: document.getElementById('authNameInput'),
+      passInput: document.getElementById('authPassInput'),
+      chip: document.getElementById('authNameChip'),
+      msg: document.getElementById('authMsg'),
+      btn: document.getElementById('authSubmitBtn'),
+      back: document.getElementById('authBackBtn'),
+      eye: document.getElementById('authPassToggle')
+    };
+  }
+
+  function authMessage(text, info) {
+    const el = authEls();
+    if (!el.msg) return;
+    el.msg.textContent = text || '';
+    el.msg.classList.toggle('info', !!info);
+  }
+
+  function setAuthMode(mode, displayName) {
+    const el = authEls();
+    authMode = mode;
+    authMessage('');
+    if (mode === 'name') {
+      el.stepName.style.display = 'block';
+      el.stepPass.style.display = 'none';
+      el.back.style.display = 'none';
+      el.sub.textContent = 'Enter your name to get started';
+      el.btn.textContent = 'Continue';
+      el.passInput.value = '';
+      setTimeout(() => el.nameInput.focus(), 30);
+      return;
+    }
+    el.stepName.style.display = 'none';
+    el.stepPass.style.display = 'block';
+    el.back.style.display = 'inline-block';
+    el.chip.textContent = displayName || authName;
+    el.passInput.type = 'password';
+    el.eye.textContent = 'Show';
+    el.passInput.value = '';
+    if (mode === 'login') {
+      el.sub.textContent = 'Welcome back! Enter your password';
+      el.btn.textContent = 'Sign in';
+      el.passInput.setAttribute('autocomplete', 'current-password');
+      el.passInput.placeholder = 'Password';
+    } else {
+      el.sub.textContent = 'Nice to meet you! Create a password for your account';
+      el.btn.textContent = 'Create account';
+      el.passInput.setAttribute('autocomplete', 'new-password');
+      el.passInput.placeholder = 'Create a password (4+ characters)';
+    }
+    setTimeout(() => el.passInput.focus(), 30);
+  }
+
+  function showAuthGate() {
+    const el = authEls();
+    if (!el.gate) return;
+    el.gate.style.display = 'flex';
+    setAuthMode('name');
+  }
+
+  function hideAuthGate() {
+    const el = authEls();
+    if (el.gate) el.gate.style.display = 'none';
+  }
+
+  async function authSubmit(ev) {
+    if (ev) ev.preventDefault();
+    if (authBusy) return;
+    const el = authEls();
+
+    if (authMode === 'name') {
+      const name = el.nameInput.value.trim().replace(/\s+/g, ' ');
+      if (name.length < 2) { authMessage('Please enter at least 2 characters.'); return; }
+      authBusy = true; el.btn.disabled = true; authMessage('Checking...', true);
+      try {
+        const res = await fetch('/api/account/exists?username=' + encodeURIComponent(name.toLowerCase()));
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { authMessage(data.detail || 'Could not reach the server. Please try again.'); return; }
+        authName = data.exists && data.name ? data.name : name;
+        setAuthMode(data.exists ? 'login' : 'create', authName);
+      } catch (e) {
+        authMessage('Connection error. Please try again.');
+      } finally {
+        authBusy = false; el.btn.disabled = false;
+      }
+      return;
+    }
+
+    const password = el.passInput.value;
+    if (!password) { authMessage('Please enter your password.'); return; }
+    if (authMode === 'create' && password.length < 4) { authMessage('Password must be at least 4 characters.'); return; }
+
+    authBusy = true; el.btn.disabled = true;
+    authMessage(authMode === 'login' ? 'Signing in...' : 'Creating your account...', true);
+    try {
+      const username = authName.toLowerCase();
+      const res = await fetch(authMode === 'login' ? '/api/account/login' : '/api/account/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(authMode === 'login' ? { username, password } : { name: authName, username, password, avatar: '⚡' })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setSessionToken(data.token);
+        userAccount = Object.assign({}, data.account, { isLoggedIn: true });
+        el.passInput.value = '';
+        hideAuthGate();
+        startSession();
+        showToast(authMode === 'login' ? `Welcome back, ${userAccount.name}!` : `Welcome to Nova Insight, ${userAccount.name}!`);
+      } else if (res.status === 401) {
+        authMessage('Wrong password. Please try again.');
+        el.passInput.select();
+      } else if (authMode === 'create' && /already taken/i.test(data.detail || '')) {
+        setAuthMode('name');
+        authMessage('That name was just taken. Try another one.');
+      } else {
+        authMessage(data.detail || 'Something went wrong. Please try again.');
+      }
+    } catch (e) {
+      authMessage('Connection error. Please try again.');
+    } finally {
+      authBusy = false; el.btn.disabled = false;
+    }
+  }
+
+  async function startAuthFlow() {
+    const el = authEls();
+    if (el.form) el.form.addEventListener('submit', authSubmit);
+    if (el.back) el.back.addEventListener('click', () => setAuthMode('name'));
+    if (el.eye) {
+      el.eye.addEventListener('click', () => {
+        const show = el.passInput.type === 'password';
+        el.passInput.type = show ? 'text' : 'password';
+        el.eye.textContent = show ? 'Hide' : 'Show';
+        el.passInput.focus();
+      });
+    }
+    await loadUserAccount();
+    if (userAccount.isLoggedIn) {
+      hideAuthGate();
+      startSession();
+    } else {
+      showAuthGate();
+    }
+  }
+
   // --- Account & Profile Management ---
   const SESSION_TOKEN_KEY = 'kazai_session_token';
 
@@ -2164,7 +2344,7 @@
       isCreator: false
     };
     updateUserAccountUI();
-    showToast('Signed out of Nova Insight');
+    window.location.reload();
   }
 
   async function saveUserAccount() {
