@@ -687,6 +687,17 @@ async def get_account(request: Request):
         "hasPassword": False
     }
 
+@app.get("/api/account/exists")
+async def account_exists(username: str = ""):
+    """Used by the start screen: does this name already have an account? (name step -> password step)"""
+    target = (username or "").strip().lower()
+    if len(target) < 2:
+        raise HTTPException(status_code=400, detail="Please enter at least 2 characters")
+    for u in load_accounts().get("users", []):
+        if u.get("username", "").lower() == target:
+            return {"exists": True, "name": u.get("name", target)}
+    return {"exists": False, "name": ""}
+
 @app.post("/api/account/login")
 async def login_account(req: LoginRequest, request: Request):
     data = load_accounts()
