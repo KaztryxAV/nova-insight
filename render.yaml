@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: nova-insight
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      # Password for the KaztryxAV creator account (you type this in the Render dashboard)
+      - key: KAZAI_CREATOR_PASSWORD
+        sync: false
+      # Free Postgres connection string (Neon / Supabase). Keeps accounts when Render restarts.
+      - key: DATABASE_URL
+        sync: false
