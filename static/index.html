@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#212121">
+  <meta name="theme-color" content="#ffffff">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -34,7 +34,32 @@
   <!-- App Stylesheet -->
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="theme-dark">
+<body class="theme-light">
+<!-- Start screen: name first, then password -->
+<div class="auth-gate" id="authGate" style="display:none;">
+  <div class="auth-card">
+    <img class="auth-logo" src="/static/icon-512.png" alt="Nova Insight logo">
+    <h1 class="auth-title">Nova Insight</h1>
+    <p class="auth-sub" id="authSub">Enter your name to get started</p>
+    <form id="authForm" autocomplete="on" novalidate>
+      <div class="auth-step" id="authStepName">
+        <input id="authNameInput" class="auth-input" type="text" name="username" autocomplete="username" placeholder="Your name" maxlength="32" autocapitalize="words" spellcheck="false">
+      </div>
+      <div class="auth-step" id="authStepPass" style="display:none;">
+        <div class="auth-chip" id="authNameChip"></div>
+        <div class="auth-pass-wrap">
+          <input id="authPassInput" class="auth-input" type="password" name="password" autocomplete="current-password" placeholder="Password" maxlength="128">
+          <button type="button" class="auth-eye" id="authPassToggle" aria-label="Show or hide password">Show</button>
+        </div>
+      </div>
+      <p class="auth-msg" id="authMsg" role="alert"></p>
+      <button type="submit" class="auth-btn" id="authSubmitBtn">Continue</button>
+      <button type="button" class="auth-back" id="authBackBtn" style="display:none;">&larr; Use a different name</button>
+    </form>
+    <p class="auth-credit">Created by <strong>KaztryxAV</strong></p>
+  </div>
+</div>
+
   <!-- App Opening Transition Splash Screen -->
   <div class="app-splash-screen" id="appSplashScreen">
     <div class="splash-inner">
@@ -366,7 +391,7 @@
             <button type="button" class="theme-select-card active" data-theme-val="dark" id="settingsThemeDark">
               <span class="theme-card-icon">🌙</span>
               <strong>Dark Mode</strong>
-              <small>Default high-contrast dark theme</small>
+              <small>High-contrast dark theme</small>
             </button>
             <button type="button" class="theme-select-card" data-theme-val="light" id="settingsThemeLight">
               <span class="theme-card-icon">☀️</span>
