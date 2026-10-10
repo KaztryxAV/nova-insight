@@ -965,12 +965,7 @@
     } else {
       // Assistant
       const avatarSvg = `
-        <div class="assistant-avatar">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2a10 10 0 0 1 10 10 10 10 0 0 1-10 10 10 10 0 0 1-10-10A10 10 0 0 1 12 2z"/>
-            <path d="M12 6v6l4 2"/>
-          </svg>
-        </div>
+        <div class="assistant-avatar"><img src="/static/icon-192.png" alt="Nova Insight"></div>
       `;
 
       const formattedHtml = renderMarkdownWithCodeBlocks(msg.content);
@@ -1049,6 +1044,58 @@
     messagesContainer.appendChild(row);
   }
 
+  // --- Nova Insight: fade-in text while a reply streams in ---
+  // Every re-render replaces the DOM, so words that were already on screen are shown instantly and
+  // only the newly arrived words fade in (with a tiny stagger). Code blocks are left untouched.
+  function fadeInNewWords(root, alreadyShown) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (parent && parent.closest('pre, code, script, style')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+
+    let index = 0;
+    let fresh = 0;
+    for (const node of nodes) {
+      const frag = document.createDocumentFragment();
+      for (const part of node.nodeValue.split(/(\s+)/)) {
+        if (!part) continue;
+        if (/^\s+$/.test(part)) {
+          frag.appendChild(document.createTextNode(part));
+          continue;
+        }
+        const span = document.createElement('span');
+        span.className = 'nova-word';
+        span.textContent = part;
+        if (index >= alreadyShown) {
+          span.classList.add('nova-fade');
+          span.style.animationDelay = Math.min(fresh * 28, 420) + 'ms';
+          fresh++;
+        }
+        frag.appendChild(span);
+        index++;
+      }
+      node.parentNode.replaceChild(frag, node);
+    }
+    return index;
+  }
+
+  function renderStreamingReply(el, content, state) {
+    el.innerHTML = renderMarkdownWithCodeBlocks(content);
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && content.length < 15000) {
+      state.revealed = fadeInNewWords(el, state.revealed);
+    }
+    const cursor = document.createElement('span');
+    cursor.className = 'typing-cursor';
+    el.appendChild(cursor);
+  }
+
   // --- Send Message & Streaming ---
   async function sendMessage(textOverride = null) {
     if (isStreaming) {
@@ -1111,12 +1158,7 @@
     assistantRow.className = 'message-row assistant';
     assistantRow.id = `msg_${assistantIdx}`;
     assistantRow.innerHTML = `
-      <div class="assistant-avatar">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2a10 10 0 0 1 10 10 10 10 0 0 1-10 10 10 10 0 0 1-10-10A10 10 0 0 1 12 2z"/>
-          <path d="M12 6v6l4 2"/>
-        </svg>
-      </div>
+      <div class="assistant-avatar"><img src="/static/icon-192.png" alt="Nova Insight"></div>
       <div class="message-bubble assistant">
         <div class="assistant-text-content"><span class="typing-cursor"></span></div>
       </div>
@@ -1125,6 +1167,8 @@
     scrollToBottom();
 
     const assistantContentEl = assistantRow.querySelector('.assistant-text-content');
+    const streamState = { revealed: 0 };
+    assistantRow.classList.add('streaming');
 
     // Streaming setup
     isStreaming = true;
@@ -1181,7 +1225,7 @@
                 const data = JSON.parse(jsonStr);
                 if (data.delta) {
                   assistantMsg.content += data.delta;
-                  assistantContentEl.innerHTML = renderMarkdownWithCodeBlocks(assistantMsg.content) + '<span class="typing-cursor"></span>';
+                  renderStreamingReply(assistantContentEl, assistantMsg.content, streamState);
                   scrollToBottom();
                 }
                 if (data.done) {
@@ -1236,6 +1280,7 @@
       }
       saveConversations();
     } finally {
+      assistantRow.classList.remove('streaming');
       isStreaming = false;
       toggleStreamingUI(false);
       abortController = null;
