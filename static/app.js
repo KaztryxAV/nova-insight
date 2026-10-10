@@ -783,9 +783,7 @@
   }
 
   function selectConversation(id) {
-    if (isStreaming) {
-      stopStreaming();
-    }
+    // A reply that is still being written keeps going in the background when you switch chats.
     activeConversationId = id;
     renderSidebarHistory();
     renderChatFeed();
@@ -1091,7 +1089,7 @@
   // --- Send Message & Streaming ---
   async function sendMessage(textOverride = null) {
     if (isStreaming) {
-      stopStreaming();
+      showToast('Nova is still replying. Tap the stop button to cancel it.');
       return;
     }
 
@@ -1218,7 +1216,7 @@
                 if (data.delta) {
                   assistantMsg.content += data.delta;
                   renderStreamingReply(assistantContentEl, assistantMsg.content, streamState);
-                  scrollToBottom();
+                  if (activeConversationId === conv.id) scrollToBottom();
                 }
                 if (data.done) {
                   break;
@@ -3013,13 +3011,24 @@
     messageInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        if (!sendBtn.disabled || isStreaming) {
+        if (isStreaming) {
+          showToast('Nova is still replying. Tap the stop button to cancel it.');
+          return;
+        }
+        if (!sendBtn.disabled) {
           sendMessage();
         }
       }
     });
 
-    sendBtn.addEventListener('click', () => sendMessage());
+    // While a reply is streaming the send button is the stop button.
+    sendBtn.addEventListener('click', () => {
+      if (isStreaming) {
+        stopStreaming();
+      } else {
+        sendMessage();
+      }
+    });
 
     // File attachments
     attachFileBtn.addEventListener('click', () => fileInput.click());
