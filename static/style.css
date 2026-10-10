@@ -2978,3 +2978,60 @@ body.compact-chat .message-bubble.assistant p { margin-bottom: 6px; }
 .sidebar-header .new-chat-btn { white-space: nowrap; min-width: 0; }
 .sidebar-header .new-chat-btn .shortcut-tag { display: none; }
 
+
+
+/* ==========================================================================
+   Message box: roomy on phones, tool buttons scroll sideways
+   ========================================================================== */
+.input-box-container { position: relative; }
+.input-tools { display: contents; }           /* desktop: layout unchanged */
+.input-tools > #attachFileBtn { order: -1; }
+.input-tools > * { flex: 0 0 auto; }
+.input-row .input-right-actions { flex: 0 0 auto; }
+#messageInput { min-width: 0; overflow-y: auto; }
+
+.think-menu { right: 12px; }
+
+@media (max-width: 768px) {
+  .input-area-wrap { padding: 0 10px 10px; }
+  .input-box-container { padding: 8px 10px; border-radius: 22px; }
+  .input-row { flex-wrap: wrap; align-items: center; row-gap: 4px; }
+
+  /* the text box gets the whole top row */
+  #messageInput {
+    order: 0;
+    flex: 1 1 100%;
+    width: 100%;
+    min-height: 46px;
+    padding: 10px 6px 6px;
+    font-size: 16px;               /* 16px also stops iPhones zooming in */
+    max-height: min(180px, 26dvh);
+  }
+
+  /* second row: scrollable tools + send button that never moves */
+  .input-tools {
+    display: flex;
+    order: 1;
+    flex: 1 1 0;
+    min-width: 0;
+    gap: 6px;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+    padding: 2px 2px;
+    touch-action: pan-x;
+  }
+  .input-tools::-webkit-scrollbar { display: none; }
+  .input-tools > * { scroll-snap-align: start; }
+  .input-tools > #attachFileBtn { order: 0; }
+  .input-tools.fade-right { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); }
+  .input-tools.fade-left { -webkit-mask-image: linear-gradient(270deg, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(270deg, #000 calc(100% - 26px), transparent); }
+  .input-tools.fade-left.fade-right { -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
+  .input-row .input-right-actions { order: 2; }
+  .think-btn-label { display: inline; }   /* there is room now that the strip scrolls */
+
+  .think-menu { left: 10px; right: 10px; width: auto; max-width: 340px; }
+}
