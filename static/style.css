@@ -3035,3 +3035,30 @@ body.compact-chat .message-bubble.assistant p { margin-bottom: 6px; }
 
   .think-menu { left: 10px; right: 10px; width: auto; max-width: 340px; }
 }
+
+/* Phone: make the top bar horizontally scrollable so every button is reachable */
+@media (max-width: 768px) {
+  .top-nav {
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    justify-content: flex-start !important;
+    gap: 12px;
+    padding-left: 10px;
+    padding-right: 10px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
+    overscroll-behavior-x: contain;
+  }
+  .top-nav::-webkit-scrollbar { display: none; }
+  .top-nav-left, .top-nav-right {
+    flex: 0 0 auto !important;
+    min-width: max-content;
+  }
+  .top-nav-right { margin-left: auto; padding-right: 6px; }
+  .top-nav-left > *, .top-nav-right > * {
+    flex-shrink: 0 !important;
+    white-space: nowrap;
+  }
+  .voice-mode-pill-btn .voice-btn-text { display: inline !important; }
+}
