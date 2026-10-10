@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+data/
+*.log
+cloudflared.exe
+.env
+static/videos/*.mp4
+static/videos/*.jpg
