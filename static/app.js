@@ -56,7 +56,18 @@
     voicePitch: 1.0,
     voiceRate: 1.0,
     voiceVolume: 100,
-    autoSpeak: false
+    autoSpeak: false,
+    thinkingLevel: 'moderate',
+    responseLength: 'balanced',
+    tone: 'default',
+    nickname: '',
+    aiTitles: true,
+    fontSize: 'medium',
+    chatWidth: 'normal',
+    fadeText: true,
+    compact: false,
+    enterToSend: true,
+    autoScroll: true
   };
 
   // --- DOM Elements ---
@@ -253,6 +264,7 @@
   function init() {
     try { initSplashScreen(); } catch (e) { console.error('initSplashScreen error', e); }
     try { loadSettings(); } catch (e) { console.error('loadSettings error', e); }
+    try { applyDisplaySettings(); initThinkingUI(); } catch (e) { console.error('display settings error', e); }
     try { loadTheme(); } catch (e) { console.error('loadTheme error', e); }
     try { loadProjects(); } catch (e) { console.error('loadProjects error', e); }
     try { setupMarkdownRenderer(); } catch (e) { console.error('setupMarkdownRenderer error', e); }
@@ -374,6 +386,9 @@
     if (settingVoiceVolume) settings.voiceVolume = parseInt(settingVoiceVolume.value, 10);
     if (settingAutoSpeak) settings.autoSpeak = settingAutoSpeak.checked;
 
+    collectNewSettings();
+    applyDisplaySettings();
+    syncThinkUI();
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
     closeSettings();
     showToast('Settings & Voice preferences saved successfully');
@@ -412,6 +427,7 @@
     }
     if (settingAutoSpeak) settingAutoSpeak.checked = !!settings.autoSpeak;
 
+    populateNewSettings();
     populateVoiceList();
     fetchTunnelStatus();
     settingsModal.style.display = 'flex';
@@ -1078,12 +1094,166 @@
   function renderStreamingReply(el, content, state) {
     el.innerHTML = renderMarkdownWithCodeBlocks(content);
     const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!reduceMotion && content.length < 15000) {
+    if (!reduceMotion && settings.fadeText !== false && content.length < 15000) {
       state.revealed = fadeInNewWords(el, state.revealed);
     }
     const cursor = document.createElement('span');
     cursor.className = 'typing-cursor';
     el.appendChild(cursor);
+  }
+
+  // --- Thinking level, AI chat titles, display options, export ---
+  const THINK_LEVELS = {
+    instant: { icon: '⚡', label: 'Instant' },
+    moderate: { icon: '🧠', label: 'Moderate' },
+    resourced: { icon: '🔬', label: 'Resourced' }
+  };
+
+  function persistSettings() {
+    try { localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings)); } catch (e) {}
+  }
+
+  function setThinkingStatus(el, text) {
+    if (!el || !text) return;
+    el.innerHTML = '<span class="think-status">' + escapeHtml(text) + '<span class="think-dots"><i></i><i></i><i></i></span></span>';
+  }
+
+  function syncThinkUI() {
+    const level = THINK_LEVELS[settings.thinkingLevel] ? settings.thinkingLevel : 'moderate';
+    const info = THINK_LEVELS[level];
+    const icon = document.getElementById('thinkBtnIcon');
+    const label = document.getElementById('thinkBtnLabel');
+    if (icon) icon.textContent = info.icon;
+    if (label) label.textContent = info.label;
+    document.querySelectorAll('#thinkMenu .think-opt').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-level') === level);
+    });
+    const sel = document.getElementById('settingThinkingLevel');
+    if (sel) sel.value = level;
+  }
+
+  function setThinkingLevel(level) {
+    if (!THINK_LEVELS[level]) return;
+    settings.thinkingLevel = level;
+    persistSettings();
+    syncThinkUI();
+    showToast('Thinking level: ' + THINK_LEVELS[level].label);
+  }
+
+  function initThinkingUI() {
+    const wrap = document.getElementById('thinkWrap');
+    const btn = document.getElementById('thinkBtn');
+    const menu = document.getElementById('thinkMenu');
+    syncThinkUI();
+    if (!wrap || !btn || !menu) return;
+    const close = () => { menu.style.display = 'none'; wrap.classList.remove('open'); };
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = menu.style.display === 'none';
+      menu.style.display = open ? 'block' : 'none';
+      wrap.classList.toggle('open', open);
+    });
+    menu.querySelectorAll('.think-opt').forEach(opt => {
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setThinkingLevel(opt.getAttribute('data-level'));
+        close();
+      });
+    });
+    document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  }
+
+  function applyDisplaySettings() {
+    const b = document.body;
+    ['small', 'medium', 'large', 'xlarge'].forEach(s => b.classList.remove('fs-' + s));
+    b.classList.add('fs-' + (settings.fontSize || 'medium'));
+    ['narrow', 'normal', 'wide'].forEach(s => b.classList.remove('cw-' + s));
+    b.classList.add('cw-' + (settings.chatWidth || 'normal'));
+    b.classList.toggle('compact-chat', !!settings.compact);
+  }
+
+  function populateNewSettings() {
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+    setVal('settingThinkingLevel', THINK_LEVELS[settings.thinkingLevel] ? settings.thinkingLevel : 'moderate');
+    setVal('settingResponseLength', settings.responseLength || 'balanced');
+    setVal('settingTone', settings.tone || 'default');
+    setVal('settingNickname', settings.nickname || '');
+    setVal('settingFontSize', settings.fontSize || 'medium');
+    setVal('settingChatWidth', settings.chatWidth || 'normal');
+    setChk('settingAiTitles', settings.aiTitles !== false);
+    setChk('settingFadeText', settings.fadeText !== false);
+    setChk('settingCompact', settings.compact);
+    setChk('settingEnterToSend', settings.enterToSend !== false);
+    setChk('settingAutoScroll', settings.autoScroll !== false);
+  }
+
+  function collectNewSettings() {
+    const getVal = (id, d) => { const el = document.getElementById(id); return el ? el.value : d; };
+    const getChk = (id, d) => { const el = document.getElementById(id); return el ? el.checked : d; };
+    settings.thinkingLevel = getVal('settingThinkingLevel', settings.thinkingLevel);
+    settings.responseLength = getVal('settingResponseLength', settings.responseLength);
+    settings.tone = getVal('settingTone', settings.tone);
+    settings.nickname = getVal('settingNickname', settings.nickname).trim().slice(0, 40);
+    settings.fontSize = getVal('settingFontSize', settings.fontSize);
+    settings.chatWidth = getVal('settingChatWidth', settings.chatWidth);
+    settings.aiTitles = getChk('settingAiTitles', settings.aiTitles);
+    settings.fadeText = getChk('settingFadeText', settings.fadeText);
+    settings.compact = getChk('settingCompact', settings.compact);
+    settings.enterToSend = getChk('settingEnterToSend', settings.enterToSend);
+    settings.autoScroll = getChk('settingAutoScroll', settings.autoScroll);
+  }
+
+  // After the first reply finishes, ask the AI for a short title for the chat.
+  async function maybeGenerateTitle(conv) {
+    try {
+      if (!conv || settings.aiTitles === false || conv.aiTitled || conv.messages.length !== 2) return;
+      const u = conv.messages[0];
+      const a = conv.messages[1];
+      if (!u || !a || !u.content || !a.content || !a.content.trim()) return;
+      conv.aiTitled = true;
+      const autoTitle = conv.title;
+      const plainReply = a.content.replace(/<[^>]*>/g, ' ').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+      const res = await fetch('/api/title', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: u.content.slice(0, 600), assistant: plainReply.slice(0, 600) })
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const title = (data.title || '').trim();
+      // If you renamed the chat while the title was being written, keep your name.
+      if (!title || conv.title !== autoTitle) return;
+      conv.title = title;
+      saveConversations();
+      renderSidebarHistory(chatSearchInput ? chatSearchInput.value : '');
+    } catch (e) {
+      console.warn('Title generation skipped', e);
+    }
+  }
+
+  function exportChats() {
+    try {
+      const payload = {
+        app: 'Nova Insight',
+        exportedAt: new Date().toISOString(),
+        account: userAccount && userAccount.username ? userAccount.username : '',
+        conversations: conversations
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'nova-insight-chats-' + new Date().toISOString().slice(0, 10) + '.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      showToast('Chats exported');
+    } catch (e) {
+      showToast('Could not export chats');
+    }
   }
 
   // --- Send Message & Streaming ---
@@ -1158,6 +1328,9 @@
 
     const assistantContentEl = assistantRow.querySelector('.assistant-text-content');
     const streamState = { revealed: 0 };
+    const thinkLevelNow = voiceBriefMode ? 'instant' : (settings.thinkingLevel || 'moderate');
+    if (thinkLevelNow === 'resourced') setThinkingStatus(assistantContentEl, 'Thinking deeply');
+    else if (thinkLevelNow === 'moderate') setThinkingStatus(assistantContentEl, 'Thinking');
     assistantRow.classList.add('streaming');
 
     // Streaming setup
@@ -1183,7 +1356,11 @@
           systemPrompt: (settings.systemPrompt || '') + (voiceBriefMode ? '\n\nVOICE MODE: You are speaking aloud. Reply in 1-2 short, plain sentences (under 40 words). No markdown, lists, or code.' : ''),
           webSearch: isWebSearchActive,
           isImageMode: isPhotoGenerationActive,
-          projectId: conv.projectId || activeProjectId
+          projectId: conv.projectId || activeProjectId,
+          thinking: voiceBriefMode ? 'instant' : (settings.thinkingLevel || 'moderate'),
+          responseLength: settings.responseLength || 'balanced',
+          tone: settings.tone || 'default',
+          nickname: (settings.nickname || (userAccount && userAccount.name) || '')
         }),
         signal: abortController.signal
       });
@@ -1213,10 +1390,13 @@
             if (jsonStr) {
               try {
                 const data = JSON.parse(jsonStr);
+                if (data.status && !assistantMsg.content) {
+                  setThinkingStatus(assistantContentEl, data.status);
+                }
                 if (data.delta) {
                   assistantMsg.content += data.delta;
                   renderStreamingReply(assistantContentEl, assistantMsg.content, streamState);
-                  if (activeConversationId === conv.id) scrollToBottom();
+                  if (activeConversationId === conv.id && settings.autoScroll !== false) scrollToBottom();
                 }
                 if (data.done) {
                   break;
@@ -1253,6 +1433,7 @@
       if (typeof updateAccountStats === 'function') updateAccountStats();
       // Re-render message row to attach full action toolbar
       renderChatFeed();
+      maybeGenerateTitle(conv);
 
     } catch (err) {
       if (err.name === 'AbortError') {
@@ -2822,6 +3003,10 @@
 
     // Settings modal
     settingsBtn.addEventListener('click', openSettings);
+    const settingsBtnTopEl = document.getElementById('settingsBtnTop');
+    if (settingsBtnTopEl) settingsBtnTopEl.addEventListener('click', openSettings);
+    const exportChatsBtnEl = document.getElementById('exportChatsBtn');
+    if (exportChatsBtnEl) exportChatsBtnEl.addEventListener('click', exportChats);
     closeSettingsBtn.addEventListener('click', closeSettings);
     cancelSettingsBtn.addEventListener('click', closeSettings);
     saveSettingsBtn.addEventListener('click', saveSettings);
@@ -3010,6 +3195,8 @@
 
     messageInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
+        // With 'Press Enter to send' off, plain Enter just adds a new line and Ctrl/Cmd+Enter sends.
+        if (settings.enterToSend === false && !(e.ctrlKey || e.metaKey)) return;
         e.preventDefault();
         if (isStreaming) {
           showToast('Nova is still replying. Tap the stop button to cancel it.');
