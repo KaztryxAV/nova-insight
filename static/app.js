@@ -857,6 +857,7 @@
   function makeChatItem(c, showProjectTag) {
     const item = document.createElement('div');
     item.className = `chat-history-item ${c.id === activeConversationId ? 'active' : ''}`;
+    item.dataset.convId = c.id;
     const proj = showProjectTag ? projectOf(c) : null;
     item.innerHTML = `
       <span class="chat-title-text" title="${escapeHtml(c.title)}">${proj ? `<span class="chat-proj-tag" title="${escapeHtml(proj.name)}">📁</span> ` : ''}${escapeHtml(c.title)}</span>
@@ -1229,30 +1230,77 @@
     settings.autoScroll = getChk('settingAutoScroll', settings.autoScroll);
   }
 
-  // After the first reply finishes, ask the AI for a short title for the chat.
+  // After the first reply finishes, ask the AI for a short title for the chat (like ChatGPT).
+  // The engine is free and sometimes busy, so we retry a few times before giving up for now;
+  // the next reply in the same chat tries again.
+  const _titleBusy = new Set();
+  function _titleSource(conv) {
+    const u = conv.messages.find(m => m.role === 'user' && m.content && m.content.trim());
+    if (!u) return null;
+    const a = conv.messages.find(m => m.role === 'assistant' && m.content && m.content.trim() &&
+      !/^\s*(\u26a0|error|connection|sorry, something)/i.test(m.content) && !/\(Generation stopped\)/.test(m.content));
+    if (!a) return null;
+    let plain = a.content.replace(/<[^>]*>/g, ' ').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/```[\s\S]*?```/g, ' code ').replace(/\s+/g, ' ').trim();
+    if (!plain && /!\[|<img|<video|\.mp4/i.test(a.content)) plain = '(generated an image or video for the user)';
+    return { user: u.content.slice(0, 600), assistant: plain.slice(0, 600) };
+  }
+
+  // Types the new title out letter by letter in the sidebar (skipped if reduced motion is on).
+  function typeTitleInSidebar(convId, title) {
+    try {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      document.querySelectorAll('.chat-history-item[data-conv-id="' + convId + '"] .chat-title-text').forEach(span => {
+        let node = span.lastChild;
+        if (!node || node.nodeType !== 3) return;
+        node.nodeValue = '';
+        let i = 0;
+        const step = Math.max(1, Math.ceil(title.length / 28));
+        const timer = setInterval(() => {
+          i = Math.min(title.length, i + step);
+          if (!node.parentNode) { clearInterval(timer); return; }
+          node.nodeValue = title.slice(0, i);
+          if (i >= title.length) clearInterval(timer);
+        }, 28);
+      });
+    } catch (e) { /* the title is already saved; animation is optional */ }
+  }
+
   async function maybeGenerateTitle(conv) {
     try {
-      if (!conv || settings.aiTitles === false || conv.aiTitled || conv.messages.length !== 2) return;
-      const u = conv.messages[0];
-      const a = conv.messages[1];
-      if (!u || !a || !u.content || !a.content || !a.content.trim()) return;
-      conv.aiTitled = true;
+      if (!conv || settings.aiTitles === false || conv.aiTitled || _titleBusy.has(conv.id)) return;
+      if ((conv.titleTries || 0) >= 4) return;
+      const src = _titleSource(conv);
+      if (!src) return;
+      _titleBusy.add(conv.id);
+      conv.titleTries = (conv.titleTries || 0) + 1;
       const autoTitle = conv.title;
-      const plainReply = a.content.replace(/<[^>]*>/g, ' ').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
-      const res = await fetch('/api/title', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: u.content.slice(0, 600), assistant: plainReply.slice(0, 600) })
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      const title = (data.title || '').trim();
+      let title = '';
+      for (let attempt = 0; attempt < 3 && !title; attempt++) {
+        if (attempt) await new Promise(r => setTimeout(r, attempt * 3000));
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 32000);
+        try {
+          const res = await fetch('/api/title', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(src),
+            signal: ctl.signal
+          });
+          if (res.ok) title = ((await res.json()).title || '').trim();
+        } catch (e) { /* retry */ }
+        clearTimeout(t);
+      }
+      _titleBusy.delete(conv.id);
+      if (!title) { saveConversations(); return; }
+      conv.aiTitled = true;
       // If you renamed the chat while the title was being written, keep your name.
-      if (!title || conv.title !== autoTitle) return;
+      if (conv.title !== autoTitle) { saveConversations(); return; }
       conv.title = title;
       saveConversations();
       renderSidebarHistory(chatSearchInput ? chatSearchInput.value : '');
+      typeTitleInSidebar(conv.id, title);
     } catch (e) {
+      _titleBusy.delete(conv && conv.id);
       console.warn('Title generation skipped', e);
     }
   }
@@ -1314,7 +1362,9 @@
 
     // Auto rename conversation from first message
     if (conv.messages.length === 1 && conv.title === 'New chat') {
-      conv.title = text.length > 28 ? text.substring(0, 28) + '...' : text;
+      let _t = text.replace(/\s+/g, ' ').trim();
+      if (_t.length > 34) { _t = _t.slice(0, 34); const sp = _t.lastIndexOf(' '); if (sp > 14) _t = _t.slice(0, sp); }
+      conv.title = _t || 'New chat';
     }
     conv.updatedAt = Date.now();
     saveConversations();
@@ -1360,6 +1410,7 @@
     // Work mode: Nova plans, writes files, runs code and reports back (own agent loop)
     if (workModeActive && window.NovaWork) {
       await runWorkAgent(conv, assistantMsg, assistantRow, assistantContentEl, userMsg, text);
+      maybeGenerateTitle(conv);
       return;
     }
 
