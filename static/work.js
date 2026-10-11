@@ -401,7 +401,7 @@
       isImageMode: false,
       webSearch: false
     });
-    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: signal });
+    const res = await fetch('/api/chat', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, o.headers || {}), body: JSON.stringify(body), signal: signal });
     if (signal && signal.aborted) throw abortError();
     if (!res.ok) {
       const e = new Error('HTTP ' + res.status);
