@@ -35,6 +35,17 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="theme-light">
+<script>
+  /* Apply the saved light/dark theme before anything paints, so the loading screen matches it */
+  try {
+    var __t = localStorage.getItem('nova_theme_v2') || 'light';
+    if (__t === 'system') __t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+    document.body.classList.remove('theme-light', 'theme-dark');
+    document.body.classList.add(__t === 'dark' ? 'theme-dark' : 'theme-light');
+    var __m = document.querySelector('meta[name="theme-color"]');
+    if (__m) __m.setAttribute('content', __t === 'dark' ? '#07041a' : '#f5f1ff');
+  } catch (e) {}
+</script>
 <!-- Start screen: name first, then password -->
 <div class="auth-gate" id="authGate" style="display:none;">
   <div class="auth-card">
@@ -65,12 +76,14 @@
     <div class="splash-inner">
       <div class="splash-logo-container">
         <div class="splash-aura-glow"></div>
+        <div class="splash-orbit"></div>
         <img src="/static/icon-512.png" alt="Nova Insight Logo" class="splash-logo-icon">
         <div class="splash-pulse-ring"></div>
       </div>
       <div class="splash-brand-text">
         <h1 class="splash-title">Nova Insight</h1>
         <p class="splash-subtitle">Unified Intelligence & Imagination</p>
+        <p class="splash-credit">Created by KaztryxAV</p>
       </div>
       <div class="splash-progress-track">
         <div class="splash-progress-bar"></div>
