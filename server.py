@@ -364,12 +364,15 @@ def generate_smart_simulated_response(prompt: str, model: str, history: List[Mes
         "I can explain the full concept, write code examples, or guide you step by step."
     )
 
-async def pollinations_text(messages: List[Dict[str, str]], model: str = "openai-fast", timeout_s: float = 12.0) -> str:
+async def pollinations_text(messages: List[Dict[str, str]], model: str = "openai-fast", timeout_s: float = 12.0, seed: Optional[int] = None) -> str:
     """Single (non-streaming) text completion through the built-in free engine. Returns '' on any failure."""
     try:
         timeout = httpx.Timeout(connect=4.0, read=timeout_s, write=5.0, pool=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.post("https://text.pollinations.ai/", json={"messages": messages, "model": model})
+            payload = {"messages": messages, "model": model}
+            if seed is not None:
+                payload["seed"] = seed
+            r = await client.post("https://text.pollinations.ai/", json=payload)
             if r.status_code != 200:
                 return ""
             text = r.text.strip()
@@ -1090,13 +1093,20 @@ async def generate_chat_title(req: TitleRequest):
     if not user_text:
         return {"title": ""}
     convo = f"User: {user_text}\nAssistant: {(req.assistant or '').strip()[:500]}"
-    raw = await pollinations_text([
+    msgs = [
         {"role": "system", "content": (
-            "Write a short title (2 to 5 words) that sums up this chat. Reply with ONLY the title: "
-            "no quotes, no trailing punctuation, no emoji, in the same language as the user."
+            "Write a short title (2 to 5 words) that sums up this chat, like ChatGPT does for its chat list. "
+            "Reply with ONLY the title: no quotes, no trailing punctuation, no emoji, in the same language as the user."
         )},
         {"role": "user", "content": convo},
-    ], model="openai-fast", timeout_s=25.0)
+    ]
+    raw = ""
+    # The free engine is sometimes busy: try again with a different seed (identical requests get cached).
+    for attempt in range(3):
+        raw = await pollinations_text(msgs, model="openai-fast", timeout_s=25.0, seed=random.randint(1, 10**9))
+        if raw.strip():
+            break
+        await asyncio.sleep(1.0)
     title = (raw.splitlines()[0] if raw else "").strip().strip("\"'`*#. ")
     if not title or len(title) > 60 or "pollinations" in title.lower():
         return {"title": ""}
