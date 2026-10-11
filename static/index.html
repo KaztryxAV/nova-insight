@@ -125,32 +125,6 @@
         </button>
       </div>
 
-      <!-- Antigravity-Style Projects Bar -->
-      <div class="sidebar-projects-bar">
-        <div class="project-selector-wrap" id="projectSelectorWrap">
-          <button class="project-pill-btn" id="projectSelectorBtn" title="Switch or manage projects (Antigravity Style)">
-            <span class="project-icon">📁</span>
-            <span class="project-name" id="currentProjectName">General Workspace</span>
-            <svg class="icon chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="m6 9 6 6 6-6"/>
-            </svg>
-          </button>
-          
-          <div class="project-dropdown-menu" id="projectDropdownMenu" style="display: none;">
-            <div class="project-menu-header">
-              <span>Workspaces & Projects</span>
-              <button class="btn-micro" id="addProjectBtn" title="Create new project">+ New</button>
-            </div>
-            <div class="project-list" id="projectListContainer">
-              <!-- Rendered dynamically -->
-            </div>
-            <div class="project-menu-footer">
-              <button class="project-manage-link" id="manageProjectsBtn">⚙️ Project Settings & Rules</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Chat Search Filter -->
       <div class="sidebar-search">
         <div class="search-input-wrap">
@@ -159,6 +133,20 @@
           </svg>
           <input type="text" id="chatSearchInput" placeholder="Search chats..." autocomplete="off">
         </div>
+      </div>
+
+      <!-- Projects (like ChatGPT): folders that group chats, rules and reference files -->
+      <div class="sidebar-projects" id="sidebarProjects">
+        <div class="sp-head">
+          <button type="button" class="sp-toggle" id="spToggle" aria-expanded="true">
+            <svg class="icon sp-toggle-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            <span>Projects</span>
+          </button>
+          <button type="button" class="sp-add" id="addProjectBtn" title="New project" aria-label="New project">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+        <div class="sp-list" id="projectListContainer"></div>
       </div>
 
       <!-- Chat History List -->
@@ -982,7 +970,7 @@
       <div class="modal-header">
         <div class="modal-header-title">
           <span class="header-icon">📁</span>
-          <h2 id="projectModalTitle">Project Settings (Antigravity Style)</h2>
+          <h2 id="projectModalTitle">Project settings</h2>
         </div>
         <button class="icon-btn modal-close" id="closeProjectBtn">✕</button>
       </div>
