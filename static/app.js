@@ -22,7 +22,14 @@
   let modelsList = [];
   let isStreaming = false;
   let abortController = null;
-  let currentAttachment = null;
+  // Photos, videos and files waiting to be sent (up to MAX_ATTACHMENTS)
+  let pendingAttachments = [];
+  const MAX_ATTACHMENTS = 5;
+  const MAX_VIDEO_BYTES = 600 * 1024 * 1024;
+  const TEXT_FILE_RE = /\.(txt|md|py|js|jsx|ts|tsx|html|css|json|csv|xml|yml|yaml|log|sh|bat|ini|toml|sql|java|c|h|cpp|cs|go|rs|rb|php|swift|kt)$/i;
+  const videoUrls = new Map(); // attachment id -> blob URL (a video can only be replayed during the visit it was sent)
+  let attachSeq = 0;
+  let pendingAvatar = null;    // profile photo chosen but not saved yet
   let isWebSearchActive = false;
   let isPhotoGenerationActive = false;
   let workModeActive = false;
@@ -97,9 +104,14 @@
   const attachFileBtn = document.getElementById('attachFileBtn');
   const fileInput = document.getElementById('fileInput');
   const attachmentPreview = document.getElementById('attachmentPreview');
-  const previewFileName = document.getElementById('previewFileName');
-  const previewFileIcon = document.getElementById('previewFileIcon');
-  const removeAttachmentBtn = document.getElementById('removeAttachmentBtn');
+  const attachStrip = document.getElementById('attachStrip');
+  const dropOverlay = document.getElementById('dropOverlay');
+  const modeSwitch = document.getElementById('modeSwitch');
+  const modeNormalBtn = document.getElementById('modeNormalBtn');
+  const modeWorkBtn = document.getElementById('modeWorkBtn');
+  const avatarFileInput = document.getElementById('avatarFileInput');
+  const avatarUploadBtn = document.getElementById('avatarUploadBtn');
+  const avatarRemoveBtn = document.getElementById('avatarRemoveBtn');
   const webSearchToggle = document.getElementById('webSearchToggle');
   const imageGenToggleBtn = document.getElementById('imageGenToggleBtn');
   const workToggleBtn = document.getElementById('workToggleBtn');
@@ -778,7 +790,27 @@
   }
 
   function saveConversations() {
-    localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(conversations));
+    // Transient fields (_v = frames for the vision model, loading) are never saved.
+    const replacer = (k, v) => (k === '_v' || k === 'loading') ? undefined : v;
+    let saved = false;
+    try {
+      localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(conversations, replacer));
+      saved = true;
+    } catch (e) {
+      // Browser storage is full (photos take space): drop the picture previews of the oldest messages first.
+      const previews = [];
+      conversations.slice().sort((x, y) => (x.updatedAt || 0) - (y.updatedAt || 0)).forEach(c => {
+        c.messages.forEach(m => (m.attachments || []).forEach(at => { if (at.thumb) previews.push(at); }));
+      });
+      while (!saved && previews.length) {
+        delete previews.shift().thumb;
+        try {
+          localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(conversations, replacer));
+          saved = true;
+        } catch (e2) { /* keep trimming */ }
+      }
+      if (!saved) showToast('Your browser storage is full, so recent chats may not be saved');
+    }
     renderSidebarHistory();
   }
 
@@ -977,22 +1009,16 @@
     row.id = `msg_${index}`;
 
     if (msg.role === 'user') {
-      let attachmentBadge = '';
-      if (msg.attachment) {
-        attachmentBadge = `
-          <div class="user-msg-attachment-badge">
-            <span>📎</span>
-            <span>${escapeHtml(msg.attachment.name)}</span>
-          </div>
-        `;
-      }
-
+      const attHtml = renderUserAttachmentsHtml(msg);
       row.innerHTML = `
-        <div class="message-bubble user">
-          ${attachmentBadge}
-          <div>${escapeHtml(msg.content)}</div>
+        <div class="message-bubble user${attHtml ? ' has-media' : ''}">
+          ${attHtml}
+          ${msg.content ? `<div>${escapeHtml(msg.content)}</div>` : ''}
         </div>
       `;
+      row.querySelectorAll('.msg-media-item').forEach(btn => {
+        btn.addEventListener('click', () => openMediaPreview(getMsgAttachments(msg)[+btn.dataset.idx]));
+      });
     } else {
       // Assistant
       const avatarSvg = `
@@ -1235,14 +1261,22 @@
   // the next reply in the same chat tries again.
   const _titleBusy = new Set();
   function _titleSource(conv) {
-    const u = conv.messages.find(m => m.role === 'user' && m.content && m.content.trim());
+    const u = conv.messages.find(m => m.role === 'user' && ((m.content && m.content.trim()) || getMsgAttachments(m).length));
     if (!u) return null;
     const a = conv.messages.find(m => m.role === 'assistant' && m.content && m.content.trim() &&
       !/^\s*(\u26a0|error|connection|sorry, something)/i.test(m.content) && !/\(Generation stopped\)/.test(m.content));
     if (!a) return null;
     let plain = a.content.replace(/<[^>]*>/g, ' ').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/```[\s\S]*?```/g, ' code ').replace(/\s+/g, ' ').trim();
     if (!plain && /!\[|<img|<video|\.mp4/i.test(a.content)) plain = '(generated an image or video for the user)';
-    return { user: u.content.slice(0, 600), assistant: plain.slice(0, 600) };
+    const ua = getMsgAttachments(u)[0];
+    let userText = (u.content || '').trim();
+    if (ua && (ua.kind === 'image' || ua.kind === 'video')) {
+      const what = ua.kind === 'video' ? 'video' : 'photo';
+      userText = (userText ? userText + ' ' : 'Shared a ' + what + '. ') + '[' + what + (ua.caption ? ': ' + ua.caption.slice(0, 160) : '') + ']';
+    } else if (!userText && ua) {
+      userText = 'Shared a file: ' + ua.name;
+    }
+    return { user: userText.slice(0, 600), assistant: plain.slice(0, 600) };
   }
 
   // Types the new title out letter by letter in the sidebar (skipped if reduced motion is on).
@@ -1336,7 +1370,11 @@
     }
 
     const text = (textOverride || messageInput.value).trim();
-    if (!text && !currentAttachment) return;
+    if (!text && !pendingAttachments.length) return;
+    if (pendingAttachments.some(at => at.loading)) {
+      showToast('Still preparing your attachment...');
+      return;
+    }
 
     let conv = getActiveConversation();
     if (!conv) {
@@ -1353,8 +1391,8 @@
       content: text,
       timestamp: Date.now()
     };
-    if (currentAttachment) {
-      userMsg.attachment = Object.assign({}, currentAttachment);
+    if (pendingAttachments.length) {
+      userMsg.attachments = pendingAttachments.slice();
       clearAttachment();
     }
 
@@ -1364,7 +1402,8 @@
     if (conv.messages.length === 1 && conv.title === 'New chat') {
       let _t = text.replace(/\s+/g, ' ').trim();
       if (_t.length > 34) { _t = _t.slice(0, 34); const sp = _t.lastIndexOf(' '); if (sp > 14) _t = _t.slice(0, sp); }
-      conv.title = _t || 'New chat';
+      const _ua = getMsgAttachments(userMsg)[0];
+      conv.title = _t || (_ua ? (_ua.kind === 'video' ? 'Shared video' : _ua.kind === 'image' ? 'Shared photo' : String(_ua.name || 'Shared file').slice(0, 30)) : 'New chat');
     }
     conv.updatedAt = Date.now();
     saveConversations();
@@ -1406,6 +1445,33 @@
     if (thinkLevelNow === 'resourced') setThinkingStatus(assistantContentEl, 'Thinking deeply');
     else if (thinkLevelNow === 'moderate') setThinkingStatus(assistantContentEl, 'Thinking');
     assistantRow.classList.add('streaming');
+
+    // Photos & videos: a free vision model describes them first so Nova can talk about them
+    const sentAtts = getMsgAttachments(userMsg);
+    if (sentAtts.some(at => (at.kind === 'image' || at.kind === 'video') && at.caption === undefined)) {
+      isStreaming = true;
+      toggleStreamingUI(true);
+      abortController = new AbortController();
+      let stoppedLooking = false;
+      try {
+        await describeAttachments(sentAtts, text, assistantContentEl, abortController.signal);
+      } catch (e) {
+        stoppedLooking = true;
+      }
+      isStreaming = false;
+      abortController = null;
+      toggleStreamingUI(false);
+      if (stoppedLooking) {
+        assistantMsg.content = '*(Generation stopped)*';
+        assistantContentEl.innerHTML = renderMarkdownWithCodeBlocks(assistantMsg.content);
+        assistantRow.classList.remove('streaming');
+        saveConversations();
+        renderChatFeed();
+        return;
+      }
+      if (thinkLevelNow === 'resourced') setThinkingStatus(assistantContentEl, 'Thinking deeply');
+      else setThinkingStatus(assistantContentEl, 'Thinking');
+    }
 
     // Work mode: Nova plans, writes files, runs code and reports back (own agent loop)
     if (workModeActive && window.NovaWork) {
@@ -1457,7 +1523,7 @@
         body: JSON.stringify({
           messages: conv.messages.slice(0, -1).slice(-6).map(m => ({
             role: m.role,
-            content: (window.NovaWork ? window.NovaWork.stripCard(m.content) : m.content) + (m.attachment ? `\n[Attached: ${m.attachment.name}]\n${m.attachment.content || ''}` : '')
+            content: messageWithAttachments(m, 12000, window.NovaWork ? window.NovaWork.stripCard(m.content) : m.content)
           })),
           model: currentModel,
           temperature: settings.temperature,
@@ -1663,45 +1729,309 @@
       saveConversations();
       renderChatFeed();
       messageInput.value = lastUser.content;
+      // Re-attach the photos / videos; ones Nova could not look at the first time get another try.
+      pendingAttachments = getMsgAttachments(lastUser).map(at => {
+        const copy = Object.assign({}, at);
+        if (copy.caption === '') delete copy.caption;
+        return copy;
+      });
+      renderAttachStrip();
       sendMessage(lastUser.content);
     }
   }
 
-  // --- Attachments & Files ---
-  function handleFileSelect(e) {
-    const file = e.target.files[0];
-    if (!file) return;
+  // --- Attachments: photos, videos and files ---
+  function fmtDur(s) {
+    s = Math.max(0, Math.round(s || 0));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
 
-    const reader = new FileReader();
-    const isImage = file.type.startsWith('image/');
+  // Old chats stored one attachment in msg.attachment; new ones keep a list in msg.attachments.
+  function getMsgAttachments(m) {
+    if (!m) return [];
+    if (Array.isArray(m.attachments)) return m.attachments;
+    if (m.attachment) {
+      const o = m.attachment;
+      return [{ id: 'legacy', kind: o.dataUrl ? 'image' : 'text', name: o.name, content: o.content || '', thumb: o.dataUrl || undefined, caption: o.dataUrl ? '' : undefined }];
+    }
+    return [];
+  }
 
-    reader.onload = function (evt) {
-      currentAttachment = {
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        content: isImage ? '' : evt.target.result,
-        dataUrl: isImage ? evt.target.result : null
-      };
+  // What the chat model reads for one attachment (it can't see, so photos and videos arrive as descriptions).
+  function attachmentContext(at, textLimit) {
+    if (at.kind === 'image') {
+      if (at.caption) {
+        return `\n[Photo attached: "${at.name}". What the photo shows: ${at.caption}\n(Nova sees this photo through the description above. Answer naturally as if you looked at it, and never claim to see anything that is not described.)]`;
+      }
+      return `\n[Photo attached: "${at.name}", but Nova could not look at it right now. Say so honestly, do not guess what it shows, and offer to help if the user describes it or tries again.]`;
+    }
+    if (at.kind === 'video') {
+      const len = at.duration ? ` (${fmtDur(at.duration)} long)` : '';
+      if (at.caption) {
+        return `\n[Video attached: "${at.name}"${len}. Nova watched it by looking at frames sampled across the video:\n${at.caption}\n(Answer naturally as if you watched it. You only saw these frames, not the sound or the motion in between.)]`;
+      }
+      return `\n[Video attached: "${at.name}"${len}, but Nova could not watch it right now. Say so honestly, do not guess what happens in it, and offer to help if the user describes it or tries again.]`;
+    }
+    return `\n[Attached file: ${at.name}]\n${(at.content || '').slice(0, textLimit || 12000)}`;
+  }
 
-      previewFileName.textContent = file.name;
-      previewFileIcon.textContent = isImage ? '🖼️' : '📄';
-      attachmentPreview.style.display = 'flex';
-      updateSendButtonState();
-    };
+  function messageWithAttachments(m, textLimit, baseOverride) {
+    const base = baseOverride !== undefined ? baseOverride : (m.content || '');
+    const atts = getMsgAttachments(m);
+    if (!atts.length) return base;
+    const lead = (base || '').trim() ? base : 'Please take a look at what I attached.';
+    return lead + atts.map(at => attachmentContext(at, textLimit)).join('');
+  }
 
-    if (isImage) {
-      reader.readAsDataURL(file);
-    } else {
-      reader.readAsText(file);
+  function renderUserAttachmentsHtml(msg) {
+    const atts = getMsgAttachments(msg);
+    if (!atts.length) return '';
+    const isMedia = at => (at.kind === 'image' || at.kind === 'video') && at.thumb;
+    const media = atts.filter(isMedia);
+    let html = '';
+    if (media.length) {
+      html += `<div class="msg-media n${Math.min(media.length, 4)}">` + media.map(at => {
+        const extra = at.kind === 'video'
+          ? `<span class="msg-play">&#9654;</span><span class="msg-dur">${fmtDur(at.duration)}</span>` : '';
+        return `<button type="button" class="msg-media-item ${at.kind}" data-idx="${atts.indexOf(at)}" title="${escapeHtml(at.name)}"><img src="${at.thumb}" alt="${escapeHtml(at.name)}" loading="lazy">${extra}</button>`;
+      }).join('') + '</div>';
+    }
+    atts.filter(at => !isMedia(at)).forEach(at => {
+      const ico = at.kind === 'video' ? '🎞️' : at.kind === 'image' ? '🖼️' : '📄';
+      html += `<div class="user-msg-attachment-badge"><span>${ico}</span><span>${escapeHtml(at.name)}</span></div>`;
+    });
+    return html;
+  }
+
+  function openMediaPreview(at) {
+    if (!at) return;
+    if (at.kind === 'video') {
+      const url = videoUrls.get(at.id);
+      if (url) { openVideoLightbox(url, at.name); return; }
+      if (at.thumb) openImageLightbox(at.thumb);
+      showToast('The video file is only kept for the visit you sent it in');
+    } else if (at.thumb) {
+      openImageLightbox(at.thumb);
     }
   }
 
-  function clearAttachment() {
-    currentAttachment = null;
-    attachmentPreview.style.display = 'none';
-    fileInput.value = '';
+  function loadImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => resolve({ img, url });
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
+      img.src = url;
+    });
+  }
+
+  function drawScaled(source, w, h, maxSide, quality) {
+    const scale = Math.min(1, maxSide / Math.max(w, h));
+    const cw = Math.max(1, Math.round(w * scale));
+    const ch = Math.max(1, Math.round(h * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.drawImage(source, 0, 0, cw, ch);
+    return canvas.toDataURL('image/jpeg', quality);
+  }
+
+  async function buildImageAttachment(file) {
+    const { img, url } = await loadImageFromFile(file);
+    try {
+      const w = img.naturalWidth || 1;
+      const h = img.naturalHeight || 1;
+      return { kind: 'image', width: w, height: h, thumb: drawScaled(img, w, h, 1024, 0.8), _v: [drawScaled(img, w, h, 768, 0.72)] };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function seekVideo(v, t) {
+    return new Promise(resolve => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        v.removeEventListener('seeked', finish);
+        setTimeout(resolve, 40);
+      };
+      v.addEventListener('seeked', finish);
+      setTimeout(finish, 4000);
+      try { v.currentTime = t; } catch (e) { finish(); }
+    });
+  }
+
+  // Grabs a poster plus a few frames spread across the video (these are what Nova "watches").
+  function buildVideoAttachment(file, id) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      let settled = false;
+      const fail = (why) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        URL.revokeObjectURL(url);
+        reject(new Error(why));
+      };
+      const timer = setTimeout(() => fail('timeout'), 25000);
+      v.onerror = () => fail('decode');
+      v.onloadedmetadata = async () => {
+        try {
+          const dur = isFinite(v.duration) ? v.duration : 0;
+          const w = v.videoWidth || 640;
+          const h = v.videoHeight || 360;
+          const count = dur && dur < 4 ? 2 : 4;
+          const times = [];
+          for (let i = 0; i < count; i++) {
+            times.push(dur ? Math.min(Math.max(dur - 0.08, 0.05), Math.max(0.05, dur * (i + 0.5) / count)) : 0);
+          }
+          const frames = [];
+          let thumb = '';
+          for (let i = 0; i < times.length; i++) {
+            await seekVideo(v, times[i]);
+            frames.push(drawScaled(v, w, h, 640, 0.7));
+            if (i === 0) thumb = drawScaled(v, w, h, 800, 0.78);
+          }
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          videoUrls.set(id, url);
+          resolve({ kind: 'video', duration: dur, thumb, frameTimes: times, _v: frames });
+        } catch (e) {
+          fail('frames');
+        }
+      };
+      v.src = url;
+    });
+  }
+
+  function readTextFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ kind: 'text', content: String(reader.result || '').slice(0, 30000) });
+      reader.onerror = () => reject(new Error('read'));
+      reader.readAsText(file);
+    });
+  }
+
+  async function addFiles(fileList) {
+    const files = Array.from(fileList || []);
+    for (const file of files) {
+      if (pendingAttachments.length >= MAX_ATTACHMENTS) {
+        showToast('You can attach up to ' + MAX_ATTACHMENTS + ' files at a time');
+        break;
+      }
+      const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|m4v|mkv|avi)$/i.test(file.name || '');
+      const isImage = !isVideo && file.type.startsWith('image/');
+      const isText = !isVideo && !isImage && (file.type.startsWith('text/') || file.type === 'application/json' || TEXT_FILE_RE.test(file.name || ''));
+      const label = file.name || (isImage ? 'photo' : isVideo ? 'video' : 'file');
+      if (!isImage && !isVideo && !isText) {
+        showToast(label + ' is not supported. Use photos, videos or text/code files.');
+        continue;
+      }
+      if (isVideo && file.size > MAX_VIDEO_BYTES) { showToast(label + ' is too big (max 600 MB)'); continue; }
+      if (isImage && file.size > 40 * 1024 * 1024) { showToast(label + ' is too big (max 40 MB)'); continue; }
+      if (isText && file.size > 400 * 1024) { showToast(label + ' is too big (max 400 KB for text files)'); continue; }
+
+      const id = 'att_' + Date.now().toString(36) + '_' + (++attachSeq);
+      const slot = { id, kind: isImage ? 'image' : isVideo ? 'video' : 'text', name: label, type: file.type, size: file.size, loading: true };
+      pendingAttachments.push(slot);
+      renderAttachStrip();
+      updateSendButtonState();
+      try {
+        const built = isImage ? await buildImageAttachment(file) : isVideo ? await buildVideoAttachment(file, id) : await readTextFile(file);
+        Object.assign(slot, built);
+        slot.loading = false;
+      } catch (e) {
+        const i = pendingAttachments.indexOf(slot);
+        if (i >= 0) pendingAttachments.splice(i, 1);
+        showToast("Couldn't open " + label + (isVideo ? ' (your browser may not support this video format)' : isImage ? ' (unsupported picture format)' : ''));
+      }
+      renderAttachStrip();
+      updateSendButtonState();
+    }
+  }
+
+  function renderAttachStrip() {
+    if (!attachStrip || !attachmentPreview) return;
+    attachStrip.innerHTML = '';
+    pendingAttachments.forEach(at => {
+      const chip = document.createElement('div');
+      chip.className = 'attach-chip ' + at.kind + (at.loading ? ' loading' : '');
+      let inner;
+      if (at.loading) inner = '<span class="attach-spin"></span>';
+      else if (at.thumb) inner = `<img src="${at.thumb}" alt="">` + (at.kind === 'video' ? `<span class="attach-play">&#9654;</span><span class="attach-dur">${fmtDur(at.duration)}</span>` : '');
+      else inner = '<span class="attach-file-ico">📄</span>';
+      chip.innerHTML = `<div class="attach-thumb">${inner}</div>` +
+        (at.kind === 'text' ? `<span class="attach-name">${escapeHtml(at.name)}</span>` : '') +
+        '<button type="button" class="attach-remove" aria-label="Remove attachment" title="Remove">&times;</button>';
+      chip.querySelector('.attach-remove').addEventListener('click', () => removeAttachment(at.id));
+      attachStrip.appendChild(chip);
+    });
+    attachmentPreview.style.display = pendingAttachments.length ? 'flex' : 'none';
+  }
+
+  function removeAttachment(id) {
+    const i = pendingAttachments.findIndex(at => at.id === id);
+    if (i < 0) return;
+    pendingAttachments.splice(i, 1);
+    const url = videoUrls.get(id);
+    if (url) { URL.revokeObjectURL(url); videoUrls.delete(id); }
+    renderAttachStrip();
     updateSendButtonState();
+  }
+
+  // After sending: the message now owns the attachments, so just empty the composer strip.
+  function clearAttachment() {
+    pendingAttachments = [];
+    renderAttachStrip();
+    if (fileInput) fileInput.value = '';
+    updateSendButtonState();
+  }
+
+  // Ask the vision service to describe each photo / video (it sends the frames, the server returns text).
+  async function describeAttachments(atts, hint, statusEl, signal) {
+    const todo = atts.filter(at => (at.kind === 'image' || at.kind === 'video') && at.caption === undefined);
+    if (!todo.length) return;
+    const hasVideo = todo.some(at => at.kind === 'video');
+    setThinkingStatus(statusEl, hasVideo ? 'Watching your video' : (todo.length > 1 ? 'Looking at your photos' : 'Looking at your photo'));
+    await Promise.all(todo.map(async (at) => {
+      let caption = '';
+      const frames = (at._v && at._v.length) ? at._v : (at.thumb ? [at.thumb] : []);
+      for (let attempt = 0; attempt < 2 && !caption && frames.length; attempt++) {
+        try {
+          const res = await fetch('/api/vision', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ images: frames, kind: at.kind, hint: (hint || '').slice(0, 300) }),
+            signal
+          });
+          if (res.ok) {
+            const caps = ((await res.json()).captions) || [];
+            if (at.kind === 'video') {
+              caption = caps.map((c, i) => c ? `Frame ${i + 1} (at ${fmtDur((at.frameTimes || [])[i] || 0)}): ${c}` : '').filter(Boolean).join('\n');
+            } else {
+              caption = (caps[0] || '').trim();
+            }
+          } else if (res.status === 401 || res.status === 429 || res.status === 413) {
+            break;
+          }
+        } catch (e) {
+          if (e && e.name === 'AbortError') throw e;
+        }
+      }
+      at.caption = caption; // '' means Nova could not look at it
+    }));
+    if (todo.some(at => !at.caption)) showToast("Nova couldn't look at every picture right now");
+    saveConversations();
   }
 
   // --- Speech Dictation & Audio Synthesis ---
@@ -2258,8 +2588,9 @@
   function updateSendButtonState() {
     if (isStreaming) return;
     const hasText = messageInput.value.trim().length > 0;
-    const hasAttachment = !!currentAttachment;
-    sendBtn.disabled = !hasText && !hasAttachment;
+    const hasAttachment = pendingAttachments.some(at => !at.loading);
+    const preparing = pendingAttachments.some(at => at.loading);
+    sendBtn.disabled = preparing || (!hasText && !hasAttachment);
   }
 
   function scrollToBottom(smooth) {
@@ -2528,6 +2859,47 @@
     updateUserAccountUI();
   }
 
+  function isPhotoAvatar(v) {
+    return typeof v === 'string' && v.indexOf('data:image/') === 0;
+  }
+
+  function paintAvatar(el, avatar, fallback) {
+    if (!el) return;
+    if (isPhotoAvatar(avatar)) {
+      el.classList.add('avatar-photo');
+      el.innerHTML = '';
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = avatar;
+      el.appendChild(img);
+    } else {
+      el.classList.remove('avatar-photo');
+      el.textContent = avatar || fallback || '';
+    }
+  }
+
+  // Crop the picked picture to a centred square, shrink it and save it as the profile picture.
+  async function chooseAvatarPhoto(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { showToast('Please choose a picture'); return; }
+    try {
+      const { img, url } = await loadImageFromFile(file);
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const sx = (img.naturalWidth - side) / 2;
+      const sy = (img.naturalHeight - side) / 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 192;
+      canvas.getContext('2d').drawImage(img, sx, sy, side, side, 0, 0, 192, 192);
+      URL.revokeObjectURL(url);
+      pendingAvatar = canvas.toDataURL('image/jpeg', 0.86);
+      paintAvatar(accountAvatarEmoji, pendingAvatar, '⚡');
+      if (avatarPicker) avatarPicker.querySelectorAll('.avatar-opt').forEach(b => b.classList.remove('active'));
+      await saveUserAccount();
+    } catch (e) {
+      showToast("Couldn't read that picture");
+    }
+  }
+
   function updateUserAccountUI() {
     const isLogged = !!userAccount.isLoggedIn;
     const isCreator = !!userAccount.isCreator;
@@ -2537,7 +2909,7 @@
       sidebarUserName.textContent = isLogged ? (userAccount.name || 'User') : 'Guest User';
     }
     if (sidebarUserInitial) {
-      sidebarUserInitial.textContent = isLogged ? (userAccount.avatar || '⚡') : '👤';
+      paintAvatar(sidebarUserInitial, isLogged ? (userAccount.avatar || '⚡') : '👤', '⚡');
     }
     if (sidebarUserRole) {
       if (isCreator) {
@@ -2559,7 +2931,8 @@
         accountGuestView.style.display = 'none';
 
         if (accountProfileDisplay) accountProfileDisplay.textContent = userAccount.name || 'User';
-        if (accountAvatarEmoji) accountAvatarEmoji.textContent = userAccount.avatar || '⚡';
+        if (accountAvatarEmoji) paintAvatar(accountAvatarEmoji, pendingAvatar || userAccount.avatar, '⚡');
+        if (avatarRemoveBtn) avatarRemoveBtn.style.display = isPhotoAvatar(userAccount.avatar) ? '' : 'none';
         if (accNameInput) accNameInput.value = userAccount.name || '';
         if (accUsernameDisplay) accUsernameDisplay.value = userAccount.username || '';
         if (accPasswordInput) accPasswordInput.value = '';
@@ -2597,6 +2970,7 @@
   }
 
   function openAccountModal() {
+    pendingAvatar = null;
     updateUserAccountUI();
     if (accountStatusMsg) accountStatusMsg.textContent = '';
     if (loginStatusMsg) loginStatusMsg.textContent = '';
@@ -2727,7 +3101,7 @@
     const name = accNameInput ? accNameInput.value.trim() : userAccount.name;
     const password = accPasswordInput ? accPasswordInput.value : '';
     const activeAvatarBtn = avatarPicker ? avatarPicker.querySelector('.avatar-opt.active') : null;
-    const avatar = activeAvatarBtn ? activeAvatarBtn.getAttribute('data-avatar') : (userAccount.avatar || '⚡');
+    const avatar = pendingAvatar || (activeAvatarBtn ? activeAvatarBtn.getAttribute('data-avatar') : (userAccount.avatar || '⚡'));
 
     if (accountStatusMsg) {
       accountStatusMsg.textContent = 'Saving...';
@@ -2748,6 +3122,7 @@
       if (res.ok && data.success) {
         userAccount.name = data.account.name;
         userAccount.avatar = data.account.avatar;
+        pendingAvatar = null;
         updateUserAccountUI();
         if (accountStatusMsg) {
           accountStatusMsg.textContent = '✓ Saved!';
@@ -3176,6 +3551,14 @@
       workToggleBtn.classList.toggle('active', workModeActive);
       workToggleBtn.setAttribute('aria-pressed', workModeActive ? 'true' : 'false');
     }
+    if (modeSwitch) {
+      modeSwitch.setAttribute('data-mode', workModeActive ? 'work' : 'normal');
+      [[modeNormalBtn, !workModeActive], [modeWorkBtn, workModeActive]].forEach(([btn, on]) => {
+        if (!btn) return;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    }
     document.body.classList.toggle('work-mode-on', workModeActive);
     if (messageInput) {
       messageInput.placeholder = workModeActive
@@ -3192,8 +3575,8 @@
     toggleStreamingUI(true);
     abortController = new AbortController();
     const signal = abortController.signal;
-    const history = conv.messages.slice(0, -2).map(m => ({ role: m.role, content: m.content }));
-    const att = userMsg.attachment ? `\n[Attached: ${userMsg.attachment.name}]\n${(userMsg.attachment.content || '').slice(0, 6000)}` : '';
+    const history = conv.messages.slice(0, -2).map(m => ({ role: m.role, content: messageWithAttachments(m, 3000) }));
+    const att = getMsgAttachments(userMsg).map(at => attachmentContext(at, 6000)).join('');
     let lastHtml = '';
     let pending = null;
     let renderTimer = null;
@@ -3336,6 +3719,8 @@
         btn.addEventListener('click', () => {
           avatarPicker.querySelectorAll('.avatar-opt').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
+          pendingAvatar = null;
+          paintAvatar(accountAvatarEmoji, btn.getAttribute('data-avatar'), '⚡');
         });
       });
     }
@@ -3667,8 +4052,69 @@
 
     // File attachments
     attachFileBtn.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', handleFileSelect);
-    removeAttachmentBtn.addEventListener('click', clearAttachment);
+    fileInput.addEventListener('change', (e) => {
+      const picked = Array.from(e.target.files || []);
+      fileInput.value = '';
+      addFiles(picked);
+    });
+    // Paste photos straight into the message box
+    messageInput.addEventListener('paste', (e) => {
+      const files = Array.from((e.clipboardData && e.clipboardData.files) || []).filter(f => /^(image|video)\//.test(f.type));
+      if (files.length) {
+        e.preventDefault();
+        addFiles(files);
+      }
+    });
+    // Drag & drop photos, videos and files anywhere on the page
+    let dragDepth = 0;
+    const dragHasFiles = (e) => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).indexOf('Files') >= 0);
+    document.addEventListener('dragenter', (e) => {
+      if (!dragHasFiles(e)) return;
+      e.preventDefault();
+      dragDepth++;
+      if (dropOverlay) dropOverlay.classList.add('show');
+    });
+    document.addEventListener('dragover', (e) => { if (dragHasFiles(e)) e.preventDefault(); });
+    document.addEventListener('dragleave', (e) => {
+      if (!dragHasFiles(e)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth && dropOverlay) dropOverlay.classList.remove('show');
+    });
+    document.addEventListener('drop', (e) => {
+      if (!dragHasFiles(e)) return;
+      e.preventDefault();
+      dragDepth = 0;
+      if (dropOverlay) dropOverlay.classList.remove('show');
+      addFiles(e.dataTransfer.files);
+    });
+
+    // Normal / Work switch
+    if (modeNormalBtn) modeNormalBtn.addEventListener('click', () => { if (workModeActive) toggleWorkMode(false); });
+    if (modeWorkBtn) modeWorkBtn.addEventListener('click', () => { if (!workModeActive) toggleWorkMode(true); });
+
+    // Profile photo
+    const avatarPrev = document.getElementById('accountAvatarPreview');
+    if (avatarPrev && avatarFileInput) {
+      avatarPrev.addEventListener('click', () => avatarFileInput.click());
+      avatarPrev.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); avatarFileInput.click(); } });
+    }
+    if (avatarUploadBtn && avatarFileInput) avatarUploadBtn.addEventListener('click', () => avatarFileInput.click());
+    if (avatarFileInput) {
+      avatarFileInput.addEventListener('change', () => {
+        const f = avatarFileInput.files && avatarFileInput.files[0];
+        avatarFileInput.value = '';
+        chooseAvatarPhoto(f);
+      });
+    }
+    if (avatarRemoveBtn) {
+      avatarRemoveBtn.addEventListener('click', () => {
+        pendingAvatar = null;
+        if (avatarPicker) {
+          avatarPicker.querySelectorAll('.avatar-opt').forEach(b => b.classList.toggle('active', b.getAttribute('data-avatar') === '⚡'));
+        }
+        saveUserAccount();
+      });
+    }
 
     // Web search toggle
     webSearchToggle.addEventListener('click', () => {
@@ -3679,19 +4125,6 @@
 
     // Voice dictation
     voiceInputBtn.addEventListener('click', toggleVoiceInput);
-
-    // Header actions
-    exportChatBtn.addEventListener('click', exportCurrentChat);
-    clearChatBtn.addEventListener('click', () => {
-      const conv = getActiveConversation();
-      if (conv && conv.messages.length > 0) {
-        if (confirm('Clear all messages in this conversation?')) {
-          conv.messages = [];
-          saveConversations();
-          renderChatFeed();
-        }
-      }
-    });
 
     // 24/7 Server & Tunnel settings controls
     if (copyLocalWifiBtn && settingLocalWifiUrl) {
