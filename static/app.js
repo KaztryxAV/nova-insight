@@ -25,6 +25,7 @@
   let currentAttachment = null;
   let isWebSearchActive = false;
   let isPhotoGenerationActive = false;
+  let workModeActive = false;
   let speechRecognition = null;
   let isRecordingVoice = false;
   let activeSpeechUtterance = null;
@@ -101,6 +102,7 @@
   const removeAttachmentBtn = document.getElementById('removeAttachmentBtn');
   const webSearchToggle = document.getElementById('webSearchToggle');
   const imageGenToggleBtn = document.getElementById('imageGenToggleBtn');
+  const workToggleBtn = document.getElementById('workToggleBtn');
   const voiceInputBtn = document.getElementById('voiceInputBtn');
   const settingsModal = document.getElementById('settingsModal');
   const closeSettingsBtn = document.getElementById('closeSettingsBtn');
@@ -1347,6 +1349,12 @@
     else if (thinkLevelNow === 'moderate') setThinkingStatus(assistantContentEl, 'Thinking');
     assistantRow.classList.add('streaming');
 
+    // Work mode: Nova plans, writes files, runs code and reports back (own agent loop)
+    if (workModeActive && window.NovaWork) {
+      await runWorkAgent(conv, assistantMsg, assistantRow, assistantContentEl, userMsg, text);
+      return;
+    }
+
     // Streaming setup
     isStreaming = true;
     toggleStreamingUI(true);
@@ -1390,7 +1398,7 @@
         body: JSON.stringify({
           messages: conv.messages.slice(0, -1).slice(-6).map(m => ({
             role: m.role,
-            content: m.content + (m.attachment ? `\n[Attached: ${m.attachment.name}]\n${m.attachment.content || ''}` : '')
+            content: (window.NovaWork ? window.NovaWork.stripCard(m.content) : m.content) + (m.attachment ? `\n[Attached: ${m.attachment.name}]\n${m.attachment.content || ''}` : '')
           })),
           model: currentModel,
           temperature: settings.temperature,
@@ -2926,6 +2934,7 @@
   // --- Photo Mode & Lightbox ---
   function togglePhotoMode(forceState) {
     isPhotoGenerationActive = forceState !== undefined ? forceState : !isPhotoGenerationActive;
+    if (isPhotoGenerationActive && workModeActive) toggleWorkMode(false);
     if (imageGenToggleBtn) {
       imageGenToggleBtn.classList.toggle('active', isPhotoGenerationActive);
     }
@@ -2937,6 +2946,93 @@
     if (isPhotoGenerationActive) {
       showToast('🎨 Nova Insight Photo Studio active');
     }
+  }
+
+
+  // --- Work mode: Nova works for you (plans, writes files, runs code, reports back) ---
+  function toggleWorkMode(forceState) {
+    workModeActive = forceState !== undefined ? forceState : !workModeActive;
+    if (workModeActive && isPhotoGenerationActive) togglePhotoMode(false);
+    if (workToggleBtn) {
+      workToggleBtn.classList.toggle('active', workModeActive);
+      workToggleBtn.setAttribute('aria-pressed', workModeActive ? 'true' : 'false');
+    }
+    document.body.classList.toggle('work-mode-on', workModeActive);
+    if (messageInput) {
+      messageInput.placeholder = workModeActive
+        ? 'Tell Nova what to build or do (e.g. make a to-do web app)...'
+        : 'Message Nova Insight...';
+    }
+    if (workModeActive) {
+      showToast('🛠️ Work mode on: Nova will build, run and fix things for you');
+    }
+  }
+
+  async function runWorkAgent(conv, assistantMsg, assistantRow, assistantContentEl, userMsg, text) {
+    isStreaming = true;
+    toggleStreamingUI(true);
+    abortController = new AbortController();
+    const signal = abortController.signal;
+    const history = conv.messages.slice(0, -2).map(m => ({ role: m.role, content: m.content }));
+    const att = userMsg.attachment ? `\n[Attached: ${userMsg.attachment.name}]\n${(userMsg.attachment.content || '').slice(0, 6000)}` : '';
+    let lastHtml = '';
+    let pending = null;
+    let renderTimer = null;
+    const paint = () => {
+      renderTimer = null;
+      if (!pending) return;
+      const html = pending.html;
+      const summary = pending.summary;
+      pending = null;
+      const feed = chatScrollFeed;
+      const stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 200;
+      assistantContentEl.innerHTML = html + (summary ? `<div class="work-summary">${renderMarkdownWithCodeBlocks(summary)}</div>` : '');
+      if (stick && activeConversationId === conv.id && settings.autoScroll !== false) scrollToBottom();
+    };
+    const onUpdate = (html, summary) => {
+      lastHtml = html;
+      pending = { html, summary };
+      if (renderTimer === null) renderTimer = setTimeout(paint, 120);
+    };
+    assistantContentEl.innerHTML = '';
+    try {
+      const out = await window.NovaWork.runAgent({
+        convId: conv.id,
+        userText: (text || 'Please look at the attached file.') + att,
+        history,
+        signal,
+        model: currentModel,
+        extraBody: {
+          apiKey: settings.apiKey,
+          geminiApiKey: settings.geminiApiKey,
+          claudeApiKey: settings.claudeApiKey,
+          baseUrl: settings.baseUrl,
+          projectId: conv.projectId || activeProjectId,
+          nickname: (settings.nickname || (userAccount && userAccount.name) || ''),
+          systemPrompt: settings.systemPrompt || ''
+        },
+        onUpdate
+      });
+      if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
+      pending = { html: out.html, summary: out.summary };
+      paint();
+      assistantMsg.content = out.html + (out.summary ? '\n\n' + out.summary : '');
+      if (typeof updateAccountStats === 'function') updateAccountStats();
+    } catch (err) {
+      if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
+      console.error('Work mode error', err);
+      assistantMsg.content = (lastHtml || '') + '\n\n⚠️ Work mode stopped unexpectedly. Your files are kept; tap send to continue.';
+      assistantContentEl.innerHTML = lastHtml + '<div class="work-summary"><p>⚠️ Work mode stopped unexpectedly. Your files are kept; send a message to continue.</p></div>';
+    } finally {
+      assistantRow.classList.remove('streaming');
+      isStreaming = false;
+      toggleStreamingUI(false);
+      abortController = null;
+    }
+    saveConversations();
+    renderChatFeed();
+    if (activeConversationId === conv.id && settings.autoScroll !== false) scrollToBottom();
+    maybeGenerateTitle(conv);
   }
 
   function openImageLightbox(src) {
@@ -3072,6 +3168,14 @@
         projectNewFileContent.style.display = isHidden ? 'block' : 'none';
         if (isHidden) projectNewFileContent.focus();
       });
+    }
+
+    // Work mode toggle
+    if (window.NovaWork) {
+      window.NovaWork.init({ userId: () => (userAccount && userAccount.id) || 'anon', toast: showToast });
+    }
+    if (workToggleBtn) {
+      workToggleBtn.addEventListener('click', () => toggleWorkMode());
     }
 
     // Photo Generation Toggle
