@@ -130,11 +130,51 @@ def build_style_directives(req: "ChatRequest") -> str:
         parts.append(f"The user's name is {nick}. You may address them by name now and then, naturally.")
     return "\n".join(p for p in parts if p)
 
+GREETING_RE = re.compile(
+    r"^(?:hi+|hey+|hello+|helo+|hola|yo+|sup|namaste|howdy|greetings|good\s+(?:morning|afternoon|evening|night))"
+    r"(?:\s+(?:there|everyone|nova|nova insight|buddy|bro|man|dude|friend))?$",
+    re.IGNORECASE,
+)
+
+def is_plain_greeting(text: str) -> bool:
+    """True for a bare greeting like 'hi', 'hello!' or 'good morning' (nothing else in the message)."""
+    t = re.sub(r"[^\w\s]", "", (text or "").lower(), flags=re.UNICODE)
+    t = re.sub(r"\s+", " ", t).strip()
+    return bool(t) and len(t) <= 30 and bool(GREETING_RE.match(t))
+
+def greeting_reply(text: str, nickname: str = "") -> str:
+    """A short, friendly reply to a bare greeting (instant, no AI round-trip needed)."""
+    low = (text or "").lower().strip()
+    first = re.sub(r"[^a-z ]", "", low).split(" ")[0] if low else ""
+    if "good morning" in low:
+        opener = "Good morning"
+    elif "good afternoon" in low:
+        opener = "Good afternoon"
+    elif "good evening" in low:
+        opener = "Good evening"
+    elif "good night" in low:
+        opener = "Good night"
+    elif first.startswith("hello") or first.startswith("helo"):
+        opener = "Hello"
+    elif first.startswith("hey"):
+        opener = "Hey"
+    elif first.startswith("yo"):
+        opener = "Yo"
+    elif first == "sup":
+        opener = "Hey"
+    elif first in ("namaste", "hola", "howdy", "greetings"):
+        opener = first.capitalize()
+    else:
+        opener = "Hi"
+    name = re.sub(r"[\r\n]+", " ", nickname or "").strip()[:40]
+    who = f", {name}" if name else ""
+    return f"{opener}{who}! \U0001F44B How can I help you today?"
+
 def fetch_knowledge_summary(prompt: str) -> Optional[str]:
     """Fetches high-accuracy real encyclopedia knowledge for concepts, science, biology, history, etc."""
     cleaned = re.sub(r'^(what is|what are|who is|who was|tell me about|explain|define|can you explain|what does|what do)\s+', '', prompt.strip(), flags=re.IGNORECASE)
     cleaned = re.sub(r'[?!.]+$', '', cleaned).strip()
-    if not cleaned or len(cleaned) < 2:
+    if not cleaned or len(cleaned) < 3 or is_plain_greeting(cleaned):
         return None
 
     candidates = [cleaned]
@@ -153,7 +193,8 @@ def fetch_knowledge_summary(prompt: str) -> Optional[str]:
                     data = r.json()
                     extract = data.get('extract')
                     title = data.get('title')
-                    if extract and len(extract) > 20:
+                    is_disambig = data.get('type') == 'disambiguation' or 'may refer to' in (extract or '')[:200].lower()
+                    if extract and len(extract) > 20 and not is_disambig:
                         return f"### {title}\n\n{extract}"
         except Exception:
             pass
@@ -163,6 +204,10 @@ def generate_smart_simulated_response(prompt: str, model: str, history: List[Mes
     """Natural, high-quality conversational responses when offline or network drops."""
     p_raw = prompt.strip()
     p_lower = p_raw.lower()
+
+    # A bare greeting always gets a plain greeting back (never an encyclopedia lookup)
+    if is_plain_greeting(p_raw):
+        return greeting_reply(p_raw)
 
     # 0. Creator Recognition & Attribution
     if any(k in p_lower for k in [
@@ -1289,6 +1334,15 @@ async def chat_endpoint(request: ChatRequest):
         yield f"data: {json.dumps({'delta': '', 'done': False})}\n\n"
         token_count = 0
         level = (request.thinking or "moderate").lower()
+        # A bare "hi" gets an instant, friendly "hi" back (no waiting on the AI service)
+        _last = request.messages[-1] if request.messages else None
+        if _last is not None and _last.role == "user" and is_plain_greeting(_last.content):
+            _reply = greeting_reply(_last.content, request.nickname or "")
+            for _i in range(0, len(_reply), 5):
+                yield f"data: {json.dumps({'delta': _reply[_i:_i + 5], 'done': False})}\n\n"
+                await asyncio.sleep(0.02)
+            yield f"data: {json.dumps({'delta': '', 'done': True})}\n\n"
+            return
         try:
             system_for_stream = effective_system
             if level == "resourced":
