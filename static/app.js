@@ -1341,7 +1341,13 @@
     toggleStreamingUI(true);
     abortController = new AbortController();
 
+    const MAX_RETRIES = 5;
+    const RETRY_DELAYS = [1500, 4000, 8000, 15000, 25000];
+    let bestPartial = '';
     try {
+      for (let attempt = 0; ; attempt++) {
+      try {
+      let sawDone = false;
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1369,7 +1375,10 @@
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const httpErr = new Error(`HTTP error! status: ${response.status}`);
+        // Client errors (bad request etc.) will not fix themselves; server hiccups / waking up will.
+        httpErr.noRetry = response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429;
+        throw httpErr;
       }
 
       const reader = response.body.getReader();
@@ -1402,6 +1411,7 @@
                   if (activeConversationId === conv.id && settings.autoScroll !== false) scrollToBottom();
                 }
                 if (data.done) {
+                  sawDone = true;
                   break;
                 }
               } catch (err) {
@@ -1422,10 +1432,26 @@
               if (data.delta) {
                 assistantMsg.content += data.delta;
               }
+              if (data.done) sawDone = true;
             } catch (err) {}
           }
         }
       }
+
+      // The connection closed before the server said "done": treat as an interruption and reconnect.
+      if (!sawDone && !(abortController && abortController.signal.aborted)) {
+        throw new Error('stream-dropped');
+      }
+      break; // finished successfully
+      } catch (innerErr) {
+        if (innerErr.name === 'AbortError' || innerErr.noRetry || attempt >= MAX_RETRIES) throw innerErr;
+        if (assistantMsg.content.length > bestPartial.length) bestPartial = assistantMsg.content;
+        assistantMsg.content = '';
+        streamState.revealed = 0;
+        setThinkingStatus(assistantContentEl, attempt === 0 ? 'Connection lost - reconnecting' : `Reconnecting (try ${attempt + 1} of ${MAX_RETRIES})`);
+        await waitForConnection(RETRY_DELAYS[attempt] || 25000, abortController ? abortController.signal : null);
+      }
+      } // end retry loop
 
       // Finish streaming cleanly
       assistantContentEl.innerHTML = renderMarkdownWithCodeBlocks(assistantMsg.content);
@@ -1442,6 +1468,7 @@
       if (err.name === 'AbortError') {
         assistantContentEl.innerHTML = renderMarkdownWithCodeBlocks(assistantMsg.content + ' *(Generation stopped)*');
       } else {
+        if (!(assistantMsg.content && assistantMsg.content.trim()) && bestPartial) assistantMsg.content = bestPartial;
         if (assistantMsg.content && assistantMsg.content.trim()) {
           assistantContentEl.innerHTML = renderMarkdownWithCodeBlocks(assistantMsg.content);
         } else {
@@ -1460,6 +1487,36 @@
       abortController = null;
     }
   }
+
+  // Wait before a reconnect attempt. If the phone is offline, wait for it to come back; Stop cancels the wait.
+  function waitForConnection(delayMs, signal) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener('online', onOnline);
+        if (signal) signal.removeEventListener('abort', onAbort);
+        if (err) reject(err); else resolve();
+      };
+      const onOnline = () => finish();
+      const onAbort = () => { const e = new Error('aborted'); e.name = 'AbortError'; finish(e); };
+      if (signal && signal.aborted) return onAbort();
+      window.addEventListener('online', onOnline);
+      if (signal) signal.addEventListener('abort', onAbort);
+      timer = setTimeout(() => finish(), navigator.onLine === false ? 90000 : delayMs);
+    });
+  }
+
+  // Keep the (free) server awake and wake it as soon as the app is opened or the network returns.
+  function pingServer() {
+    try { fetch('/api/health', { cache: 'no-store' }).catch(() => {}); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pingServer(); });
+  window.addEventListener('online', pingServer);
+  setInterval(() => { if (!document.hidden) pingServer(); }, 4 * 60 * 1000);
 
   function stopStreaming() {
     if (abortController) {
