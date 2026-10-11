@@ -1013,6 +1013,46 @@ async def generate_chat_title(req: TitleRequest):
 async def get_models():
     return {"models": MODELS}
 
+_PING = object()
+
+async def await_with_pings(coro, interval: float = 8.0):
+    """Await a slow coroutine while yielding _PING every `interval` seconds so the stream never goes silent."""
+    task = asyncio.ensure_future(coro)
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=interval)
+            if not task.done():
+                yield _PING
+        yield task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+
+async def iter_with_pings(agen, interval: float = 8.0):
+    """Iterate an async generator, yielding _PING whenever it is silent for `interval` seconds."""
+    it = agen.__aiter__()
+    task = None
+    try:
+        while True:
+            if task is None:
+                task = asyncio.ensure_future(it.__anext__())
+            await asyncio.wait({task}, timeout=interval)
+            if not task.done():
+                yield _PING
+                continue
+            try:
+                item = task.result()
+            except StopAsyncIteration:
+                task = None
+                return
+            task = None
+            yield item
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+
+KEEPALIVE_FRAME = ": keepalive\n\n"
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "timestamp": time.time()}
@@ -1041,7 +1081,12 @@ async def chat_endpoint(request: ChatRequest):
             cleaned_title = clean_video_prompt(last_user_prompt)
             yield f"data: {json.dumps({'delta': f'🎬 **Nova Insight Cinema Studio** — Producing 30-second Short: *\"{cleaned_title.title()}\"*...\\n\\n*Generating 3 cinematic acts, audio score & rendering 30s video...*\\n\\n', 'done': False})}\n\n"
             
-            short_data = await generate_30s_short_video(last_user_prompt)
+            short_data = None
+            async for _r in await_with_pings(generate_30s_short_video(last_user_prompt)):
+                if _r is _PING:
+                    yield KEEPALIVE_FRAME
+                else:
+                    short_data = _r
             vid_url = short_data["url"]
             vid_title = short_data["title"]
 
@@ -1248,7 +1293,12 @@ async def chat_endpoint(request: ChatRequest):
             system_for_stream = effective_system
             if level == "resourced":
                 yield f"data: {json.dumps({'status': 'Thinking deeply', 'delta': '', 'done': False})}\n\n"
-                notes = await deep_think_notes(request.messages, effective_system)
+                notes = ""
+                async for _r in await_with_pings(deep_think_notes(request.messages, effective_system)):
+                    if _r is _PING:
+                        yield KEEPALIVE_FRAME
+                    else:
+                        notes = _r
                 if notes:
                     system_for_stream = (
                         effective_system
@@ -1256,7 +1306,10 @@ async def chat_endpoint(request: ChatRequest):
                         "Never mention or quote these notes.]\n" + notes
                     )
                 yield f"data: {json.dumps({'status': 'Writing the answer', 'delta': '', 'done': False})}\n\n"
-            async for token in stream_live_ai(request.messages, system_for_stream, level):
+            async for token in iter_with_pings(stream_live_ai(request.messages, system_for_stream, level)):
+                if token is _PING:
+                    yield KEEPALIVE_FRAME
+                    continue
                 token_count += 1
                 yield f"data: {json.dumps({'delta': token, 'done': False})}\n\n"
 
@@ -1638,9 +1691,9 @@ if CLOUD_MODE:
                          "last_healthy": time.time(), "watchdog_active": False})
 
     def _cloud_self_ping():
-        """Free hosting sleeps after ~15 min without traffic. A light ping every 10 min keeps it awake."""
+        """Free hosting sleeps after ~15 min without traffic. A light ping every 4 min keeps it awake."""
         while True:
-            time.sleep(600)
+            time.sleep(240)
             if not _public_url:
                 continue
             try:
