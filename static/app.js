@@ -292,8 +292,8 @@
       }, 650);
     };
 
-    // Auto-dismiss after 1.25s
-    const timer = setTimeout(dismiss, 1250);
+    // Auto-dismiss after 1.7s
+    const timer = setTimeout(dismiss, 1700);
 
     // Fast skip on click or touch
     splash.addEventListener('click', () => {
@@ -320,6 +320,8 @@
     const isDark = effective === 'dark';
     document.body.classList.toggle('theme-dark', isDark);
     document.body.classList.toggle('theme-light', !isDark);
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) metaTheme.setAttribute('content', isDark ? '#07041a' : '#f5f1ff');
 
     const moon = themeToggleBtn ? themeToggleBtn.querySelector('.moon-icon') : null;
     const sun = themeToggleBtn ? themeToggleBtn.querySelector('.sun-icon') : null;
