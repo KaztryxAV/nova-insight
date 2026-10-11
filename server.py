@@ -987,60 +987,81 @@ class ProjectItem(BaseModel):
     files: Optional[List[Dict[str, Any]]] = None
 
 # ----------------- Projects Endpoints -----------------
+# Projects belong to the account that created them. Old projects without an owner belong to the creator.
+def _project_owned_by(p, user) -> bool:
+    if not user or not isinstance(p, dict):
+        return False
+    owner = p.get("ownerId")
+    if owner:
+        return owner == user.get("id")
+    return bool(user.get("isCreator") or user.get("username") == "kaztryxav")
+
+def _clean_project_files(files):
+    out = []
+    for f in (files or [])[:20]:
+        if isinstance(f, dict):
+            out.append({"name": str(f.get("name", ""))[:120], "content": str(f.get("content", ""))[:20000]})
+    return out
+
 @app.get("/api/projects")
-async def get_projects():
-    return {"projects": load_projects()}
+async def get_projects(request: Request):
+    user = get_current_user_from_request(request)
+    if not user:
+        return {"projects": []}
+    return {"projects": [p for p in load_projects()
+                         if p.get("id") != "proj-default" and _project_owned_by(p, user)]}
 
 @app.post("/api/projects")
-async def save_project(proj: ProjectItem):
+async def save_project(proj: ProjectItem, request: Request):
+    user = get_current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Please sign in to save projects.")
+    name = (proj.name or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="Project name is required.")
     projects = load_projects()
     now = time.time()
-    if proj.id:
-        found = False
+    fields = {
+        "name": name,
+        "description": (proj.description or "")[:300],
+        "instructions": (proj.instructions or "")[:6000],
+        "files": _clean_project_files(proj.files),
+    }
+    saved = None
+    if proj.id and proj.id != "proj-default":
         for p in projects:
-            if p["id"] == proj.id:
-                p["name"] = proj.name
-                p["description"] = proj.description or ""
-                p["instructions"] = proj.instructions or ""
-                p["files"] = proj.files or []
+            if p.get("id") == proj.id:
+                if not _project_owned_by(p, user):
+                    raise HTTPException(status_code=403, detail="That project belongs to another account.")
+                p.update(fields)
+                p["ownerId"] = user["id"]
                 p["updatedAt"] = now
-                found = True
                 saved = p
                 break
-        if not found:
-            saved = {
-                "id": proj.id,
-                "name": proj.name,
-                "description": proj.description or "",
-                "instructions": proj.instructions or "",
-                "files": proj.files or [],
-                "createdAt": now,
-                "updatedAt": now
-            }
-            projects.append(saved)
-    else:
-        new_id = f"proj-{int(now * 1000)}"
-        saved = {
-            "id": new_id,
-            "name": proj.name,
-            "description": proj.description or "",
-            "instructions": proj.instructions or "",
-            "files": proj.files or [],
+    if saved is None:
+        saved = dict(fields)
+        saved.update({
+            "id": f"proj-{int(now * 1000)}-{secrets.token_hex(2)}",
+            "ownerId": user["id"],
             "createdAt": now,
-            "updatedAt": now
-        }
+            "updatedAt": now,
+        })
         projects.append(saved)
-
     save_projects(projects)
     return {"success": True, "project": saved}
 
 @app.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str):
+async def delete_project(project_id: str, request: Request):
+    user = get_current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Please sign in.")
     if project_id == "proj-default":
         raise HTTPException(status_code=400, detail="Cannot delete default project")
     projects = load_projects()
-    projects = [p for p in projects if p["id"] != project_id]
-    save_projects(projects)
+    target = next((p for p in projects if p.get("id") == project_id), None)
+    if target is not None and not _project_owned_by(target, user):
+        raise HTTPException(status_code=403, detail="That project belongs to another account.")
+    save_projects([p for p in projects if p.get("id") != project_id])
     return {"success": True, "message": "Project deleted"}
 
 class ImageGenRequest(BaseModel):
@@ -1638,7 +1659,7 @@ async def health_check():
     return {"status": "ok", "timestamp": time.time()}
 
 @app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, http_request: Request):
     model_id = request.model.lower()
     sse_headers = {
         "Cache-Control": "no-cache",
@@ -1765,10 +1786,10 @@ async def chat_endpoint(request: ChatRequest):
     # -------------------------------------------------------------
     # Inject Project Context / Rules (Antigravity-style)
     # -------------------------------------------------------------
-    if request.projectId:
+    if request.projectId and request.projectId != "proj-default":
         projects = load_projects()
         proj = next((p for p in projects if p["id"] == request.projectId), None)
-        if proj:
+        if proj and _project_owned_by(proj, get_current_user_from_request(http_request)):
             project_context = f"\n\n[Active Project: {proj.get('name')}]\n"
             if proj.get("instructions"):
                 project_context += f"Project Instructions:\n{proj.get('instructions')}\n"
