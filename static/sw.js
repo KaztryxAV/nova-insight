@@ -3,7 +3,7 @@
  * Provides offline caching, lightning-fast boot, and PWA capabilities for iOS & Android
  */
 
-const CACHE_NAME = 'novainsight-pwa-v7';
+const CACHE_NAME = 'novainsight-pwa-v8';
 const STATIC_ASSETS = [
   '/',
   '/static/style.css',
