@@ -3263,3 +3263,63 @@ body, .sidebar, .top-nav, .input-box-container, .message-bubble { transition: ba
   .splash-aura-glow, .splash-orbit, .splash-pulse-ring,
   .app-splash-screen::before, .app-splash-screen::after, .auth-gate::before { animation: none !important; }
 }
+
+/* ==========================================================================
+   Smoothness pass: motion, touch response and scrolling
+   ========================================================================== */
+* { -webkit-tap-highlight-color: transparent; }
+button, a, [role="button"], label, select, summary { touch-action: manipulation; }
+.chat-scroll-feed, .chat-history-container, .modal-card, .modal-body { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+
+/* Buttons: every colour / shadow change eases, and presses give a little physical feedback */
+button {
+  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease,
+              box-shadow 0.2s ease, transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
+}
+.icon-btn:active, .new-chat-btn:active, .suggestion-card:active, .think-btn:active,
+#sendBtn:active, .voice-mode-pill-btn:active, .tool-btn:active { transform: scale(0.94); }
+.suggestion-card { transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.25s ease; }
+.suggestion-card:hover { transform: translateY(-2px); box-shadow: 0 10px 26px -14px rgba(124, 58, 237, 0.45); }
+.suggestion-card:active { transform: translateY(0) scale(0.98); }
+#chatHistoryContainer [class*="item"] { transition: background-color 0.18s ease, transform 0.18s ease; }
+.input-box-container { transition: border-color 0.2s ease, box-shadow 0.28s ease; }
+
+/* Messages: only brand-new ones animate in (re-rendering never replays it); chats cross-fade when switched */
+.message-row { animation: none; }
+.message-row.row-enter { animation: novaRowIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes novaRowIn { from { opacity: 0; transform: translateY(10px) scale(0.992); } to { opacity: 1; transform: none; } }
+.messages-container.feed-switch { animation: novaFeedSwitch 0.3s ease-out both; }
+@keyframes novaFeedSwitch { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Windows and notices glide in */
+.modal-card { animation: novaModalIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes novaModalIn { from { opacity: 0; transform: translateY(14px) scale(0.97); } to { opacity: 1; transform: none; } }
+.toast-notification { opacity: 0; transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease; }
+.toast-notification.show { opacity: 1; }
+
+/* Phone: the sidebar slides over the chat on the GPU, with a dimmed backdrop you can tap to close */
+@media (max-width: 768px) {
+  .sidebar {
+    transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease, visibility 0s linear 0s;
+    will-change: transform;
+  }
+  .app-layout.sidebar-collapsed .sidebar {
+    margin-left: 0 !important;
+    transform: translateX(-104%);
+    visibility: hidden;
+    box-shadow: none;
+    transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease, visibility 0s linear 0.34s;
+  }
+  .app-layout::after {
+    content: ''; position: fixed; inset: 0; z-index: 49;
+    background: rgba(8, 5, 25, 0.5);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+  .app-layout:not(.sidebar-collapsed)::after { opacity: 1; pointer-events: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-row.row-enter, .messages-container.feed-switch, .modal-card { animation: none !important; }
+  .sidebar, .toast-notification, button { transition-duration: 0.01ms !important; }
+}
