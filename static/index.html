@@ -202,11 +202,17 @@
             </svg>
           </button>
 
-          <!-- Nova Insight Unified AI Brand Header -->
-          <div class="kazai-unified-badge" id="kazaiUnifiedBadge" title="Nova Insight Unified AI — Chat, Code, and Photos Combined">
-            <img src="/static/icon-192.png" alt="" class="badge-logo">
-            <span class="badge-title">Nova Insight</span>
-            <span class="badge-pill">Unified AI</span>
+          <!-- Normal / Work mode switch -->
+          <div class="mode-switch" id="modeSwitch" data-mode="normal" role="tablist" aria-label="Mode">
+            <span class="mode-thumb" aria-hidden="true"></span>
+            <button type="button" class="mode-opt active" id="modeNormalBtn" data-mode="normal" role="tab" aria-selected="true" title="Normal: chat, ask, create photos and videos">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              <span>Normal</span>
+            </button>
+            <button type="button" class="mode-opt" id="modeWorkBtn" data-mode="work" role="tab" aria-selected="false" title="Work: Nova builds files, runs code and fixes errors for you">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              <span>Work</span>
+            </button>
           </div>
 
           <!-- Active Project Badge (Clickable) -->
@@ -236,19 +242,17 @@
               <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
             </svg>
           </button>
-          <button class="btn-subtle" id="exportChatBtn" title="Export conversation as Markdown">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>
-            </svg>
-            <span>Export</span>
-          </button>
-          <button class="icon-btn" id="clearChatBtn" title="Clear current chat">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-            </svg>
-          </button>
         </div>
       </header>
+
+      <!-- Drag & drop zone for photos, videos and files -->
+      <div class="drop-overlay" id="dropOverlay" aria-hidden="true">
+        <div class="drop-card">
+          <div class="drop-ico">&#128206;</div>
+          <strong>Drop to attach</strong>
+          <span>Photos, videos or text files</span>
+        </div>
+      </div>
 
       <!-- Chat Scrollable Feed -->
       <div class="chat-scroll-feed" id="chatScrollFeed">
@@ -303,17 +307,13 @@
       <div class="input-area-wrap">
         <div class="input-box-container">
           
-          <!-- File / Image Preview Capsule -->
+          <!-- Attached photos, videos and files (before sending) -->
           <div class="attachment-preview" id="attachmentPreview" style="display: none;">
-            <div class="preview-content">
-              <span class="file-icon" id="previewFileIcon">📎</span>
-              <span class="file-name" id="previewFileName">filename.txt</span>
-              <button class="remove-attachment-btn" id="removeAttachmentBtn">×</button>
-            </div>
+            <div class="attach-strip" id="attachStrip"></div>
           </div>
 
           <div class="input-row">
-            <input type="file" id="fileInput" style="display: none;" accept="image/*,.txt,.py,.js,.html,.css,.json,.md,.csv">
+            <input type="file" id="fileInput" style="display: none;" multiple accept="image/*,video/*,.txt,.py,.js,.jsx,.ts,.tsx,.html,.css,.json,.md,.csv,.xml,.yml,.yaml,.log,.sh,.sql,.java,.c,.h,.cpp,.cs,.go,.rs,.rb,.php">
 
             <!-- Auto-expanding Textarea -->
             <textarea 
@@ -325,7 +325,7 @@
 
             <!-- Tool buttons: scroll sideways on small screens -->
             <div class="input-tools" id="inputTools">
-            <button class="input-action-btn" id="attachFileBtn" title="Attach file or image">
+            <button class="input-action-btn" id="attachFileBtn" title="Attach photos, videos or files" aria-label="Attach photos, videos or files">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
               </svg>
@@ -337,14 +337,6 @@
                   <span class="think-btn-label" id="thinkBtnLabel">Moderate</span>
                 </button>
               </div>
-
-              <!-- Work mode: Nova builds, runs and fixes things for you -->
-              <button type="button" class="input-action-btn work-toggle" id="workToggleBtn" aria-pressed="false" title="Work mode: Nova works for you (writes files, runs code, fixes errors)">
-                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                </svg>
-                <span class="work-toggle-label">Work</span>
-              </button>
 
               <!-- Photo Generation Mode Toggle -->
               <button class="input-action-btn photo-toggle" id="imageGenToggleBtn" title="Generate photos & art (Nova Insight Photo Studio)">
@@ -824,8 +816,9 @@
       <!-- VIEW A: When Logged In -->
       <div class="modal-body" id="accountLoggedInView" style="display: none;">
         <div class="account-profile-banner">
-          <div class="account-avatar-large" id="accountAvatarPreview">
+          <div class="account-avatar-large" id="accountAvatarPreview" role="button" tabindex="0" title="Upload your own photo">
             <span id="accountAvatarEmoji">👑</span>
+            <span class="avatar-cam" aria-hidden="true">&#128247;</span>
           </div>
           <div class="account-profile-meta">
             <h3 id="accountProfileDisplay">KaztryxAV</h3>
@@ -854,7 +847,13 @@
         </div>
 
         <div class="form-group">
-          <label>Avatar Badge</label>
+          <label>Profile picture</label>
+          <div class="avatar-photo-row">
+            <button type="button" class="btn-subtle" id="avatarUploadBtn">&#128247; Upload your own photo</button>
+            <button type="button" class="btn-subtle" id="avatarRemoveBtn" style="display:none;">Remove photo</button>
+            <input type="file" id="avatarFileInput" accept="image/*" style="display:none;">
+          </div>
+          <div class="avatar-or">or pick a badge</div>
           <div class="avatar-picker" id="avatarPicker">
             <button type="button" class="avatar-opt active" data-avatar="👑">👑</button>
             <button type="button" class="avatar-opt" data-avatar="⚡">⚡</button>
