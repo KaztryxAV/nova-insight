@@ -707,77 +707,6 @@ def clean_video_prompt(prompt: str) -> str:
     cleaned = re.sub(r"^(make|create|generate)\s+(a\s+)?(video|short)\s*", "", cleaned, flags=re.IGNORECASE)
     return cleaned.strip() or "cyberpunk neon city in 2099 cinematic 8k"
 
-async def generate_30s_short_video(prompt: str) -> Dict[str, Any]:
-    cleaned = clean_video_prompt(prompt)
-    vid_id = f"short_{int(time.time())}_{abs(hash(cleaned)) % 10000}"
-    videos_dir = os.path.join(static_dir, "videos")
-    os.makedirs(videos_dir, exist_ok=True)
-    out_video_path = os.path.join(videos_dir, f"{vid_id}.mp4")
-
-    # Define 3 acts (10s each = 30s)
-    act1_prompt = f"{cleaned}, establishing cinematic opening hook, ultra wide shot, vertical 9:16 reel 8k"
-    act2_prompt = f"{cleaned}, dramatic action climax scene, intense atmospheric detail, vertical 9:16 reel 8k"
-    act3_prompt = f"{cleaned}, majestic conclusion finale, stunning cinematic lighting, vertical 9:16 reel 8k"
-
-    act_prompts = [act1_prompt, act2_prompt, act3_prompt]
-    seed_base = int(time.time() * 1000) % 999999
-    scene_paths = []
-    
-    # Download 3 scene frames
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for idx, act_p in enumerate(act_prompts):
-            img_url = build_photo_url(act_p, seed=seed_base + (idx * 37), aspect_ratio="9:16")
-            scene_file = os.path.join(videos_dir, f"{vid_id}_scene_{idx}.jpg")
-            try:
-                r = await client.get(img_url)
-                if r.status_code == 200 and len(r.content) > 1000:
-                    with open(scene_file, "wb") as f:
-                        f.write(r.content)
-                    scene_paths.append(scene_file)
-                else:
-                    raise Exception("Frame download failed")
-            except Exception:
-                from PIL import Image, ImageDraw
-                c = [(15, 23, 42), (88, 28, 135), (13, 148, 136)][idx]
-                img = Image.new("RGB", (720, 1280), color=c)
-                draw = ImageDraw.Draw(img)
-                draw.text((120, 600), f"ACT {idx+1}: {cleaned[:25]}", fill=(255, 255, 255))
-                img.save(scene_file, "JPEG")
-                scene_paths.append(scene_file)
-
-    # Render 30s video with FFmpeg
-    try:
-        import imageio_ffmpeg
-        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-loop", "1", "-t", "10", "-i", scene_paths[0],
-            "-loop", "1", "-t", "10", "-i", scene_paths[1],
-            "-loop", "1", "-t", "10", "-i", scene_paths[2],
-            "-f", "lavfi", "-t", "30", "-i", "sine=frequency=110:duration=30,volume=0.15,lowpass=f=500,aecho=0.8:0.88:350:0.3",
-            "-filter_complex",
-            "[0:v]scale=720:1280,setsar=1,fade=t=in:st=0:d=1,fade=t=out:st=9:d=1[v0];"
-            "[1:v]scale=720:1280,setsar=1,fade=t=in:st=0:d=1,fade=t=out:st=9:d=1[v1];"
-            "[2:v]scale=720:1280,setsar=1,fade=t=in:st=0:d=1,fade=t=out:st=9:d=1[v2];"
-            "[v0][v1][v2]concat=n=3:v=1:a=0[v]",
-            "-map", "[v]", "-map", "3:a",
-            "-r", "24",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
-            "-c:a", "aac", "-b:a", "128k",
-            out_video_path
-        ]
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-    except Exception as e:
-        print("Video render notice:", e)
-
-    return {
-        "id": vid_id,
-        "title": cleaned.title(),
-        "url": f"/static/videos/{vid_id}.mp4",
-        "duration": 30,
-        "scenes": [f"/static/videos/{vid_id}_scene_{i}.jpg" for i in range(3)]
-    }
-
 class AccountUpdate(BaseModel):
     name: Optional[str] = None
     password: Optional[str] = None
@@ -1098,6 +1027,514 @@ async def iter_with_pings(agen, interval: float = 8.0):
 
 KEEPALIVE_FRAME = ": keepalive\n\n"
 
+# ----------------- Photo & Video engine (real FLUX photos, cached; cinematic 30s shorts) -----------------
+# Photos come from FLUX.1-schnell (a free public GPU space) with Pollinations as a fallback. Every photo is
+# cached on disk under a key made of prompt + seed + size, so a /api/photo URL always keeps working: if the
+# cache was wiped (free hosting restarts) the very same image is simply generated again.
+import random
+import shutil
+import html as _html
+
+PHOTO_DIR = os.path.join(data_dir, "photos")
+os.makedirs(PHOTO_DIR, exist_ok=True)
+FLUX_SPACE = "https://black-forest-labs-flux-1-schnell.hf.space"
+HF_TOKEN = (os.environ.get("HF_TOKEN") or "").strip()  # optional: raises the free GPU quota
+POLLINATIONS_KEY = (os.environ.get("POLLINATIONS_API_KEY") or "").strip()  # optional: no watermark
+ASPECT_SIZES = {"1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344), "4:3": (1152, 864), "3:4": (864, 1152)}
+IMAGE_STYLE_BOOST = "highly detailed, sharp focus, professional lighting, rich colors, high resolution"
+_GEN_SEM: Optional[asyncio.Semaphore] = None
+_PHOTO_HITS: Dict[str, List[float]] = {}
+
+
+def detect_aspect(text: str) -> str:
+    """Pick a frame shape from words in the request (wide, phone wallpaper, 16:9 ...)."""
+    t = (text or "").lower()
+    for ar in ("16:9", "9:16", "4:3", "3:4"):
+        if ar in t:
+            return ar
+    if re.search(r"\b(phone wallpaper|mobile wallpaper|vertical|portrait orientation|instagram story|tiktok)\b", t):
+        return "9:16"
+    if re.search(r"\b(poster|book cover)\b", t):
+        return "3:4"
+    if re.search(r"\b(landscape|widescreen|wide|desktop wallpaper|banner|panorama|panoramic|thumbnail|header|cinematic)\b", t):
+        return "16:9"
+    return "1:1"
+
+
+async def enhance_image_prompt(user_prompt: str) -> str:
+    """Turn a short idea into a rich FLUX prompt (falls back to simple quality keywords)."""
+    base = (clean_image_prompt(user_prompt) or user_prompt or "").strip()[:500]
+    sys_msg = (
+        "You write prompts for the FLUX text-to-image model. Rewrite the user's idea as ONE vivid English prompt of "
+        "35-70 words: the subject and its details, setting, composition and camera angle, lighting, mood, colour "
+        "palette and art style (photorealistic unless the user asks for another style). Keep every detail the user "
+        "specified. No preamble, no quotes, no lists, and no written words inside the image. Output only the prompt."
+    )
+    out = await pollinations_text(
+        [{"role": "system", "content": sys_msg}, {"role": "user", "content": base}], model="openai-fast", timeout_s=14.0)
+    out = (out or "").strip().strip('"').strip()
+    if (not out or len(out) < 20 or len(out) > 900
+            or out.lower().startswith(("i'm sorry", "sorry", "i cannot", "i can't", "i am sorry"))):
+        return f"{base}, {IMAGE_STYLE_BOOST}"
+    return out
+
+
+def photo_cache_path(prompt: str, seed: int, w: int, h: int) -> str:
+    key = hashlib.sha1(f"{w}x{h}|{seed}|{prompt}".encode("utf-8")).hexdigest()[:24]
+    return os.path.join(PHOTO_DIR, key + ".jpg")
+
+
+async def _flux_space_generate(prompt: str, seed: int, w: int, h: int) -> Optional[bytes]:
+    """FLUX.1-schnell on a free public GPU space (Gradio API). Returns image bytes or None."""
+    try:
+        headers = {"Content-Type": "application/json"}
+        if HF_TOKEN:
+            headers["Authorization"] = f"Bearer {HF_TOKEN}"
+        timeout = httpx.Timeout(connect=8.0, read=80.0, write=10.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            r = await client.post(f"{FLUX_SPACE}/gradio_api/call/infer", headers=headers,
+                                  json={"data": [prompt, int(seed) % 2147483647, False, int(w), int(h), 4]})
+            if r.status_code != 200:
+                return None
+            event_id = (r.json() or {}).get("event_id")
+            if not event_id:
+                return None
+            url = None
+            async with client.stream("GET", f"{FLUX_SPACE}/gradio_api/call/infer/{event_id}", headers=headers) as s:
+                event = ""
+                async for line in s.aiter_lines():
+                    if line.startswith("event:"):
+                        event = line[6:].strip()
+                    elif line.startswith("data:"):
+                        if event == "complete":
+                            arr = json.loads(line[5:].strip())
+                            if arr and isinstance(arr[0], dict):
+                                url = arr[0].get("url")
+                            break
+                        if event == "error":
+                            return None
+            if not url:
+                return None
+            img = await client.get(url, headers=headers)
+            if img.status_code == 200 and len(img.content) > 2000:
+                return img.content
+    except Exception:
+        return None
+    return None
+
+
+async def _hf_router_generate(prompt: str, seed: int, w: int, h: int) -> Optional[bytes]:
+    """FLUX.1-schnell through Hugging Face's hosted inference (needs the free HF_TOKEN)."""
+    if not HF_TOKEN:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=8.0, read=80.0, write=10.0, pool=10.0),
+                                     follow_redirects=True) as client:
+            r = await client.post(
+                "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell",
+                headers={"Authorization": f"Bearer {HF_TOKEN}", "Accept": "image/jpeg"},
+                json={"inputs": prompt, "parameters": {"width": int(w), "height": int(h),
+                                                       "num_inference_steps": 4, "seed": int(seed) % 2147483647}})
+            if r.status_code == 200 and "image" in r.headers.get("content-type", "") and len(r.content) > 2000:
+                return r.content
+    except Exception:
+        return None
+    return None
+
+
+async def _pollinations_image(prompt: str, seed: int, w: int, h: int) -> Optional[bytes]:
+    """Fallback engine (lower quality and watermarked unless POLLINATIONS_API_KEY is set)."""
+    q = urllib.parse.quote(prompt[:700])
+    attempts = []
+    if POLLINATIONS_KEY:
+        attempts.append((f"https://gen.pollinations.ai/image/{q}?width={w}&height={h}&seed={seed}&model=flux&nologo=true",
+                         {"Authorization": f"Bearer {POLLINATIONS_KEY}"}))
+    attempts.append((f"https://image.pollinations.ai/prompt/{q}?width={w}&height={h}&nologo=true&seed={seed}&model=flux", {}))
+    for url, headers in attempts:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=8.0, read=70.0, write=10.0, pool=10.0),
+                                         follow_redirects=True) as client:
+                r = await client.get(url, headers=headers)
+                if r.status_code == 200 and "image" in r.headers.get("content-type", "") and len(r.content) > 2000:
+                    return r.content
+        except Exception:
+            continue
+    return None
+
+
+def _finish_and_save(data: bytes, path: str) -> None:
+    """Decode, gently sharpen and store as a high-quality JPEG."""
+    import io
+    from PIL import Image, ImageFilter
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    im = im.filter(ImageFilter.UnsharpMask(radius=1.1, percent=55, threshold=3))
+    tmp = path + ".tmp"
+    im.save(tmp, "JPEG", quality=93, optimize=True, progressive=True)
+    os.replace(tmp, path)
+    try:
+        files = sorted((os.path.join(PHOTO_DIR, f) for f in os.listdir(PHOTO_DIR) if f.endswith(".jpg")), key=os.path.getmtime)
+        for old in files[:-400]:
+            os.remove(old)
+    except Exception:
+        pass
+
+
+async def ensure_photo(prompt: str, seed: int, w: int, h: int) -> Optional[str]:
+    """Return the path of the cached photo, generating it first if needed (None if every engine failed)."""
+    global _GEN_SEM
+    path = photo_cache_path(prompt, seed, w, h)
+    if os.path.exists(path):
+        return path
+    if _GEN_SEM is None:
+        _GEN_SEM = asyncio.Semaphore(3)
+    async with _GEN_SEM:
+        if os.path.exists(path):
+            return path
+        data = None
+        for attempt in range(2):
+            data = await _flux_space_generate(prompt, seed, w, h)
+            if data:
+                break
+            await asyncio.sleep(1.0)
+        if not data:
+            data = await _hf_router_generate(prompt, seed, w, h)
+        if not data:
+            data = await _pollinations_image(prompt, seed, w, h)
+        if not data:
+            return None
+        try:
+            await asyncio.to_thread(_finish_and_save, data, path)
+        except Exception:
+            return None
+        return path
+
+
+def photo_url(prompt: str, seed: int, w: int, h: int, download: bool = False) -> str:
+    return f"/api/photo?p={urllib.parse.quote(prompt)}&s={seed}&w={w}&h={h}" + ("&dl=1" if download else "")
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return fwd or (request.client.host if request.client else "unknown")
+
+
+def _photo_rate_ok(ip: str, limit: int = 20, window: float = 600.0) -> bool:
+    now = time.time()
+    hits = [t for t in _PHOTO_HITS.get(ip, []) if now - t < window]
+    if len(hits) >= limit:
+        _PHOTO_HITS[ip] = hits
+        return False
+    hits.append(now)
+    _PHOTO_HITS[ip] = hits
+    return True
+
+
+async def run_job_with_progress(job_fn, interval: float = 8.0):
+    """Run job_fn(report) in the background. Yields ('status', text) whenever it reports progress,
+    _PING while it is quiet (keeps the connection alive), and finally ('result', value)."""
+    queue: asyncio.Queue = asyncio.Queue()
+    task = asyncio.ensure_future(job_fn(queue.put_nowait))
+    getter = None
+    try:
+        while True:
+            if getter is None:
+                getter = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({task, getter}, timeout=interval, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield ("status", getter.result())
+                getter = None
+                continue
+            if task in done:
+                while not queue.empty():
+                    yield ("status", queue.get_nowait())
+                break
+            yield _PING
+        yield ("result", task.result())
+    finally:
+        if getter is not None and not getter.done():
+            getter.cancel()
+        if not task.done():
+            task.cancel()
+
+
+@app.get("/api/photo")
+async def photo_endpoint(request: Request, p: str, s: int = 0, w: int = 1024, h: int = 1024, dl: int = 0):
+    p = (p or "").strip()[:900]
+    if not p:
+        raise HTTPException(status_code=400, detail="Missing prompt")
+    w = max(256, min(1536, (int(w) // 8) * 8))
+    h = max(256, min(1536, (int(h) // 8) * 8))
+    path = photo_cache_path(p, s, w, h)
+    if not os.path.exists(path):
+        if not get_current_user_from_request(request):
+            raise HTTPException(status_code=403, detail="Please sign in to generate photos")
+        if not _photo_rate_ok(_client_ip(request)):
+            raise HTTPException(status_code=429, detail="Too many photo requests, try again in a few minutes")
+        path = await ensure_photo(p, s, w, h)
+        if not path:
+            raise HTTPException(status_code=503, detail="The photo service is busy, please try again")
+    headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+    if dl:
+        headers["Content-Disposition"] = 'attachment; filename="nova-insight-photo.jpg"'
+    return FileResponse(path, media_type="image/jpeg", headers=headers)
+
+
+# ---- 30-second shorts: story plan -> 6 FLUX scenes -> animated clips with captions -> music ----
+VIDEO_W, VIDEO_H, VIDEO_FPS = 576, 1024, 24
+VIDEO_SCENES, SCENE_SECONDS, ENDCARD_SECONDS = 6, 4.5, 3.0
+FALLBACK_SHOTS = [
+    ("establishing ultra wide shot at golden hour", "The story begins"),
+    ("intimate close-up with fine detail", "Every detail matters"),
+    ("dynamic action moment full of energy and motion", "Things start to move"),
+    ("dramatic low angle, epic scale", "Bigger than imagined"),
+    ("emotional quiet moment, soft glowing light", "A moment to breathe"),
+    ("majestic finale, radiant cinematic light", "And it all comes together"),
+]
+
+
+async def plan_video(topic: str):
+    """Ask the AI for a 6-shot storyboard; fall back to a fixed shot list. Returns (title, [(prompt, caption)])."""
+    sys_msg = (
+        "You are a film director planning a 30-second vertical short. Reply with ONLY JSON in this shape: "
+        '{"title": "...", "scenes": [{"prompt": "...", "caption": "..."}]} with exactly 6 scenes. Each prompt is a vivid '
+        "cinematic still of one shot (25-45 words): keep the same subject and visual style in every shot, vary the camera "
+        "angle and moment, vertical composition, no written text in the image. Each caption is an evocative on-screen line "
+        "of 3 to 7 words."
+    )
+    raw = await pollinations_text(
+        [{"role": "system", "content": sys_msg}, {"role": "user", "content": f"Topic: {topic[:300]}"}],
+        model="openai-fast", timeout_s=20.0)
+    try:
+        a, b = raw.find("{"), raw.rfind("}")
+        data = json.loads(raw[a:b + 1])
+        scenes = [(str(sc["prompt"]).strip()[:600], str(sc["caption"]).strip()[:60]) for sc in data["scenes"]]
+        scenes = [sc for sc in scenes if sc[0] and sc[1]]
+        if len(scenes) >= 4:
+            scenes = scenes[:VIDEO_SCENES]
+            while len(scenes) < VIDEO_SCENES:
+                scenes.append(scenes[-1])
+            return (str(data.get("title") or topic).strip()[:60] or topic.title()), scenes
+    except Exception:
+        pass
+    scenes = [(f"{topic}, {shot}, cinematic still, vertical composition, highly detailed, dramatic lighting", cap)
+              for shot, cap in FALLBACK_SHOTS]
+    return topic.title()[:60], scenes
+
+
+def _font(size: int):
+    from PIL import ImageFont
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _wrap(draw, text: str, font, max_w: int) -> List[str]:
+    lines, cur = [], ""
+    for word in text.split():
+        trial = (cur + " " + word).strip()
+        if draw.textlength(trial, font=font) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines[:3]
+
+
+def _build_overlay(path: str, caption: str) -> None:
+    """Transparent PNG with a soft bottom gradient, the caption and a small brand tag."""
+    from PIL import Image, ImageDraw
+    W, H = VIDEO_W, VIDEO_H
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    top = int(H * 0.60)
+    for y in range(top, H):
+        a = int(185 * ((y - top) / (H - top)) ** 1.5)
+        d.line([(0, y), (W, y)], fill=(6, 4, 22, a))
+    font = _font(40)
+    lines = _wrap(d, caption, font, W - 90)
+    y = H - 120 - len(lines) * 52
+    for ln in lines:
+        tw = d.textlength(ln, font=font)
+        x = (W - tw) / 2
+        d.text((x + 2, y + 2), ln, font=font, fill=(0, 0, 0, 170))
+        d.text((x, y), ln, font=font, fill=(255, 255, 255, 255))
+        y += 52
+    tag = _font(21)
+    d.text((28, 34), "NOVA INSIGHT", font=tag, fill=(255, 255, 255, 190))
+    ov.save(path)
+
+
+def _build_endcard(path: str, title: str) -> None:
+    from PIL import Image, ImageDraw
+    W, H = VIDEO_W, VIDEO_H
+    img = Image.new("RGB", (W, H), (8, 5, 26))
+    d = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        d.line([(0, y), (W, y)], fill=(int(10 + 50 * t), int(6 + 12 * t), int(34 + 70 * (1 - abs(t - 0.5) * 2))))
+    try:
+        logo = Image.open(os.path.join(static_dir, "icon-512.png")).convert("RGBA").resize((200, 200))
+        img.paste(logo, ((W - 200) // 2, int(H * 0.30)), logo)
+    except Exception:
+        pass
+    d = ImageDraw.Draw(img)
+    yy = int(H * 0.30) + 235
+    for text, size, col, gap in (("Nova Insight", 46, (255, 255, 255), 22),
+                                 (title, 28, (196, 181, 253), 22),
+                                 ("Created by KaztryxAV", 24, (160, 160, 190), 0)):
+        f = _font(size)
+        for ln in _wrap(d, text, f, W - 80)[:2]:
+            d.text(((W - d.textlength(ln, font=f)) / 2, yy), ln, font=f, fill=col)
+            yy += size + 10
+        yy += gap
+    img.save(path, "JPEG", quality=92)
+
+
+def _fallback_frame(path: str, caption: str, idx: int) -> None:
+    """Stand-in artwork (soft nebula + stars) used only when no image engine could make this scene."""
+    from PIL import Image, ImageDraw, ImageFilter
+    rnd = random.Random(idx * 101 + 7)
+    palettes = [((20, 14, 60), (120, 60, 220)), ((10, 30, 70), (40, 160, 230)), ((50, 12, 64), (230, 70, 160)),
+                ((8, 40, 56), (30, 200, 170)), ((40, 20, 70), (250, 140, 80)), ((16, 18, 64), (110, 110, 255))]
+    base, glow = palettes[idx % len(palettes)]
+    W, H = 768, 1344
+    img = Image.new("RGB", (W, H), base)
+    layer = Image.new("RGB", (W, H), (0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    for _ in range(5):
+        cx, cy, r = rnd.randint(0, W), rnd.randint(200, H - 200), rnd.randint(180, 380)
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=tuple(int(c * rnd.uniform(0.35, 0.8)) for c in glow))
+    layer = layer.filter(ImageFilter.GaussianBlur(120))
+    img = Image.blend(img, Image.composite(layer, img, layer.convert("L")), 0.9)
+    d = ImageDraw.Draw(img)
+    for _ in range(160):
+        x, y, rr = rnd.randint(0, W), rnd.randint(0, H), rnd.choice((1, 1, 1, 2))
+        v = rnd.randint(150, 255)
+        d.ellipse((x - rr, y - rr, x + rr, y + rr), fill=(v, v, v))
+    img.save(path, "JPEG", quality=90)
+
+
+def _run_ffmpeg(cmd: List[str], timeout: int = 420) -> None:
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError("ffmpeg failed: " + (r.stderr or "")[-400:])
+
+
+def _render_scene_clip(ffmpeg: str, img: str, overlay: str, out: str, idx: int, dur: float) -> None:
+    """A slow cinematic camera move (pan / tilt) over the still, caption on top, fade in and out."""
+    W, H, FPS = VIDEO_W, VIDEO_H, VIDEO_FPS
+    sw, sh = int(W * 1.22) // 2 * 2, int(H * 1.22) // 2 * 2
+    moves = [
+        ("(iw-ow)*t/D", "(ih-oh)*0.5"), ("(iw-ow)*(1-t/D)", "(ih-oh)*0.5"),
+        ("(iw-ow)*0.5", "(ih-oh)*(1-t/D)"), ("(iw-ow)*0.5", "(ih-oh)*t/D"),
+        ("(iw-ow)*t/D", "(ih-oh)*t/D"), ("(iw-ow)*(1-t/D)", "(ih-oh)*(1-t/D)"),
+    ]
+    x, y = (e.replace("D", str(dur)) for e in moves[idx % len(moves)])
+    fc = (f"[0:v]scale={sw}:{sh}:flags=lanczos,crop={W}:{H}:x='{x}':y='{y}'[bg];"
+          f"[bg][1:v]overlay=0:0:format=auto,fade=t=in:st=0:d=0.5,fade=t=out:st={dur - 0.5}:d=0.5,setsar=1,scale=out_range=tv,format=yuv420p[v]")
+    _run_ffmpeg([ffmpeg, "-y", "-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", img,
+                 "-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", overlay,
+                 "-filter_complex", fc, "-map", "[v]", "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
+                 "-crf", "24", "-pix_fmt", "yuv420p", "-an", out])
+
+
+def _render_endcard_clip(ffmpeg: str, img: str, out: str, dur: float) -> None:
+    FPS = VIDEO_FPS
+    _run_ffmpeg([ffmpeg, "-y", "-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", img,
+                 "-vf", f"scale={VIDEO_W}:{VIDEO_H}:out_range=tv,setsar=1,fade=t=in:st=0:d=0.6,fade=t=out:st={dur - 0.6}:d=0.6,format=yuv420p",
+                 "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p", "-an", out])
+
+
+def _mux_with_music(ffmpeg: str, list_file: str, out: str, total: float) -> None:
+    """Join the clips (no re-encode) and add a soft synthesized ambient pad (A minor drone with slow tremolo + echo)."""
+    notes = [110.0, 130.81, 164.81, 220.0]
+    cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", list_file]
+    for n in notes:
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency={n}:sample_rate=44100"]
+    fc = ("[1:a]volume=0.55[a1];[2:a]volume=0.35[a2];[3:a]volume=0.28[a3];[4:a]volume=0.20[a4];"
+          "[a1][a2][a3][a4]amix=inputs=4:duration=longest,lowpass=f=1200,tremolo=f=0.2:d=0.5,"
+          f"aecho=0.8:0.8:900|1500:0.25|0.15,volume=1.8,afade=t=in:d=2,afade=t=out:st={total - 2.5}:d=2.5[a]")
+    cmd += ["-filter_complex", fc, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+            "-t", str(total), "-movflags", "+faststart", out]
+    _run_ffmpeg(cmd)
+
+
+async def make_short_video(prompt: str, report) -> Dict[str, Any]:
+    """Full pipeline for the 30-second short. `report(text)` publishes progress to the chat."""
+    cleaned = clean_video_prompt(prompt)
+    vid_id = f"short_{int(time.time())}_{secrets.token_hex(2)}"
+    videos_dir = os.path.join(static_dir, "videos")
+    os.makedirs(videos_dir, exist_ok=True)
+    work = os.path.join(videos_dir, "_" + vid_id)
+    os.makedirs(work, exist_ok=True)
+    out_path = os.path.join(videos_dir, f"{vid_id}.mp4")
+    try:
+        import imageio_ffmpeg
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        report("Planning your story")
+        title, scenes = await plan_video(cleaned)
+
+        seed_base = random.randint(1000, 900000)
+        frames: List[Optional[str]] = [None] * len(scenes)
+        sem = asyncio.Semaphore(2)
+
+        async def one(i: int):
+            async with sem:
+                report(f"Creating scene {i + 1} of {len(scenes)}")
+                frames[i] = await ensure_photo(scenes[i][0], seed_base + i * 37, 768, 1344)
+
+        await asyncio.gather(*[one(i) for i in range(len(scenes))])
+        good = [f for f in frames if f]
+        if good:
+            frames = [f or good[min(i, len(good) - 1) % len(good)] for i, f in enumerate(frames)]
+
+        clips = []
+        for i, (_p, caption) in enumerate(scenes):
+            report(f"Filming scene {i + 1} of {len(scenes)}")
+            frame = frames[i]
+            if not frame:
+                frame = os.path.join(work, f"fallback_{i}.jpg")
+                await asyncio.to_thread(_fallback_frame, frame, caption, i)
+            overlay = os.path.join(work, f"overlay_{i}.png")
+            clip = os.path.join(work, f"clip_{i}.mp4")
+            await asyncio.to_thread(_build_overlay, overlay, caption)
+            await asyncio.to_thread(_render_scene_clip, ffmpeg, frame, overlay, clip, i, SCENE_SECONDS)
+            clips.append(clip)
+
+        report("Adding the title card")
+        endcard = os.path.join(work, "endcard.jpg")
+        endclip = os.path.join(work, "clip_end.mp4")
+        await asyncio.to_thread(_build_endcard, endcard, title)
+        await asyncio.to_thread(_render_endcard_clip, ffmpeg, endcard, endclip, ENDCARD_SECONDS)
+        clips.append(endclip)
+
+        report("Adding music and finishing")
+        list_file = os.path.join(work, "clips.txt")
+        with open(list_file, "w", encoding="utf-8") as f:
+            for c in clips:
+                f.write("file '" + c.replace("\\", "/").replace("'", "'\\''") + "'\n")
+        total = round(SCENE_SECONDS * len(scenes) + ENDCARD_SECONDS, 2)
+        await asyncio.to_thread(_mux_with_music, ffmpeg, list_file, out_path, total)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        try:  # keep the disk tidy: only the most recent shorts are kept
+            old = sorted((os.path.join(videos_dir, n) for n in os.listdir(videos_dir) if n.endswith(".mp4")), key=os.path.getmtime)
+            for f in old[:-12]:
+                os.remove(f)
+        except Exception:
+            pass
+    return {
+        "id": vid_id,
+        "title": title,
+        "url": f"/static/videos/{vid_id}.mp4",
+        "duration": int(round(total)),
+        "scenes": [{"caption": c, "start": int(i * SCENE_SECONDS)} for i, (_p, c) in enumerate(scenes)],
+    }
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "timestamp": time.time()}
@@ -1123,44 +1560,53 @@ async def chat_endpoint(request: ChatRequest):
     if is_video_generation_request(last_user_prompt):
         async def video_stream():
             yield f"data: {json.dumps({'delta': '', 'done': False})}\n\n"
-            cleaned_title = clean_video_prompt(last_user_prompt)
-            yield f"data: {json.dumps({'delta': f'🎬 **Nova Insight Cinema Studio** — Producing 30-second Short: *\"{cleaned_title.title()}\"*...\\n\\n*Generating 3 cinematic acts, audio score & rendering 30s video...*\\n\\n', 'done': False})}\n\n"
-            
-            short_data = None
-            async for _r in await_with_pings(generate_30s_short_video(last_user_prompt)):
-                if _r is _PING:
-                    yield KEEPALIVE_FRAME
-                else:
-                    short_data = _r
-            vid_url = short_data["url"]
-            vid_title = short_data["title"]
+            result = None
+            try:
+                async for item in run_job_with_progress(lambda report: make_short_video(last_user_prompt, report)):
+                    if item is _PING:
+                        yield KEEPALIVE_FRAME
+                    elif item[0] == "status":
+                        yield f"data: {json.dumps({'status': item[1], 'delta': '', 'done': False})}\n\n"
+                    else:
+                        result = item[1]
+            except Exception as exc:
+                print("Video generation error:", exc)
 
+            if not result:
+                msg = ("I couldn't finish that video this time \u2014 the free video tools were busy. "
+                       "Please try again in a minute.")
+                yield f"data: {json.dumps({'delta': msg, 'done': False})}\n\n"
+                yield f"data: {json.dumps({'delta': '', 'done': True})}\n\n"
+                return
+
+            vid_url = result["url"]
+            vid_title = _html.escape(result["title"])
+            file_name = re.sub(r"[^A-Za-z0-9]+", "_", result["title"]).strip("_")[:40] or "nova_short"
+            acts = "".join(
+                f'    <div class="act-item"><strong>\u23f1\ufe0f 0:{sc["start"]:02d} | Scene {i + 1}:</strong> {_html.escape(sc["caption"])}</div>\n'
+                for i, sc in enumerate(result["scenes"])
+            )
             output_md = (
                 f'<div class="kazai-short-card" data-video-url="{vid_url}">\n'
                 f'  <div class="short-card-header">\n'
-                f'    <span class="short-badge">🎬 30s Short Reel</span>\n'
-                f'    <span class="short-creator-tag">👑 Creator: KaztryxAV</span>\n'
+                f'    <span class="short-badge">\U0001f3ac 30s Short Reel</span>\n'
+                f'    <span class="short-creator-tag">\U0001f451 Creator: KaztryxAV</span>\n'
                 f'  </div>\n'
                 f'  <div class="short-player-box">\n'
                 f'    <video class="short-html5-player" src="{vid_url}" controls playsinline loop preload="metadata"></video>\n'
                 f'  </div>\n'
                 f'  <div class="short-timeline-story">\n'
-                f'    <h4>🎞️ 3-Act Storyline (30 Seconds)</h4>\n'
-                f'    <div class="act-item"><strong>⏱️ 0:00 - 0:10 | Act 1 (The Hook):</strong> Establishing cinematic perspective</div>\n'
-                f'    <div class="act-item"><strong>⏱️ 0:10 - 0:20 | Act 2 (The Climax):</strong> Dramatic atmospheric transformation</div>\n'
-                f'    <div class="act-item"><strong>⏱️ 0:20 - 0:30 | Act 3 (The Finale):</strong> Epic cinematic resolution & outro</div>\n'
+                f'    <h4>\U0001f39e\ufe0f {vid_title}</h4>\n'
+                f'{acts}'
                 f'  </div>\n'
                 f'  <div class="short-card-actions">\n'
-                f'    <a href="{vid_url}" download="{vid_title}_30s_short.mp4" class="btn-primary-short">📥 Download 30s Short (.mp4)</a>\n'
-                f'    <button class="btn-subtle-short expand-short-btn" data-video="{vid_url}" data-title="{vid_title}">⛶ Theatre View</button>\n'
+                f'    <a href="{vid_url}" download="{file_name}_30s_short.mp4" class="btn-primary-short">\U0001f4e5 Download 30s Short (.mp4)</a>\n'
+                f'    <button class="btn-subtle-short expand-short-btn" data-video="{vid_url}" data-title="{vid_title}">\u26f6 Theatre View</button>\n'
                 f'  </div>\n'
                 f'</div>\n\n'
-                f'✨ *Generated with Nova Insight Cinema Studio — Created by KaztryxAV*'
+                f'\u2728 *Generated with Nova Insight Cinema Studio \u2014 Created by KaztryxAV*'
             )
-
-            for chunk in [output_md]:
-                yield f"data: {json.dumps({'delta': chunk, 'done': False})}\n\n"
-                await asyncio.sleep(0.05)
+            yield f"data: {json.dumps({'delta': output_md, 'done': False})}\n\n"
             yield f"data: {json.dumps({'delta': '', 'done': True})}\n\n"
 
         return StreamingResponse(video_stream(), media_type="text/event-stream", headers=sse_headers)
@@ -1171,21 +1617,49 @@ async def chat_endpoint(request: ChatRequest):
     if is_image_generation_request(last_user_prompt, model_id, request.isImageMode):
         async def image_stream():
             yield f"data: {json.dumps({'delta': '', 'done': False})}\n\n"
-            cleaned = clean_image_prompt(last_user_prompt)
-            seed_val = int(time.time() * 1000) % 1000000
-            img_url = build_photo_url(cleaned, seed=seed_val)
-            
+            aspect = detect_aspect(last_user_prompt)
+            w, h = ASPECT_SIZES[aspect]
+            seed_val = random.randint(1000, 2000000000)
+
+            async def job(report):
+                report("Imagining your photo")
+                detailed = await enhance_image_prompt(last_user_prompt)
+                report("Painting with FLUX")
+                path = await ensure_photo(detailed, seed_val, w, h)
+                return detailed, path
+
+            detailed, path = "", None
+            try:
+                async for item in run_job_with_progress(job, interval=6.0):
+                    if item is _PING:
+                        yield KEEPALIVE_FRAME
+                    elif item[0] == "status":
+                        yield f"data: {json.dumps({'status': item[1], 'delta': '', 'done': False})}\n\n"
+                    else:
+                        detailed, path = item[1]
+            except Exception as exc:
+                print("Photo generation error:", exc)
+
+            if not path:
+                msg = ("I couldn't paint that photo this time \u2014 the free image engines were busy. "
+                       "Please tap regenerate or try again in a minute.")
+                yield f"data: {json.dumps({'delta': msg, 'done': False})}\n\n"
+                yield f"data: {json.dumps({'delta': '', 'done': True})}\n\n"
+                return
+
+            url = photo_url(detailed, seed_val, w, h)
+            dl_url = photo_url(detailed, seed_val, w, h, download=True)
+            alt = re.sub(r"[\[\]\(\)\n]+", " ", clean_image_prompt(last_user_prompt))[:80] or "Generated photo"
             chunks = [
-                f"🎨 **Nova Insight Photo Studio** — Generating photo for: *\"{cleaned}\"*\n\n",
-                f"![{cleaned}]({img_url})\n\n",
-                f"**Prompt:** *{cleaned}*\n",
-                f"• **Resolution:** 1024×1024 HD (No Watermark)\n",
-                f"• **Model:** Flux Ultra Photorealism\n\n",
-                f"[📥 Download Full Photo]({img_url}) &nbsp;•&nbsp; [🔍 Open Full Size]({img_url})"
+                "\U0001f3a8 **Nova Insight Photo Studio**\n\n",
+                f"![{alt}]({url})\n\n",
+                f"**Prompt:** *{detailed}*\n\n",
+                f"\u2022 **Size:** {w}\u00d7{h} ({aspect}) \u2022 **Engine:** FLUX.1\n\n",
+                f"[\U0001f4e5 Download Photo]({dl_url}) &nbsp;\u2022&nbsp; [\U0001f50d Open Full Size]({url})",
             ]
             for c in chunks:
                 yield f"data: {json.dumps({'delta': c, 'done': False})}\n\n"
-                await asyncio.sleep(0.06)
+                await asyncio.sleep(0.05)
             yield f"data: {json.dumps({'delta': '', 'done': True})}\n\n"
 
         return StreamingResponse(image_stream(), media_type="text/event-stream", headers=sse_headers)
