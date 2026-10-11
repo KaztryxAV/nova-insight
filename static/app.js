@@ -269,7 +269,6 @@
     try { applyDisplaySettings(); initThinkingUI(); } catch (e) { console.error('display settings error', e); }
     try { initComposerLayout(); } catch (e) { console.error('composer layout error', e); }
     try { loadTheme(); } catch (e) { console.error('loadTheme error', e); }
-    try { loadProjects(); } catch (e) { console.error('loadProjects error', e); }
     try { setupMarkdownRenderer(); } catch (e) { console.error('setupMarkdownRenderer error', e); }
     try { setupSpeechRecognition(); } catch (e) { console.error('setupSpeechRecognition error', e); }
     try { attachEventListeners(); } catch (e) { console.error('attachEventListeners error', e); }
@@ -787,12 +786,12 @@
     return conversations.find(c => c.id === activeConversationId);
   }
 
-  function createNewConversation() {
+  function createNewConversation(projectId) {
     const newId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
     const newConv = {
       id: newId,
       title: 'New chat',
-      projectId: activeProjectId || 'proj-default',
+      projectId: (typeof projectId === 'string' && projectId) ? projectId : 'proj-default',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messages: []
@@ -806,6 +805,7 @@
   function selectConversation(id) {
     // A reply that is still being written keeps going in the background when you switch chats.
     activeConversationId = id;
+    syncActiveProject();
     // On phones the sidebar is a drawer: close it once a chat is chosen (and keep it closed when the app opens).
     if (window.innerWidth <= 768) appLayout.classList.add('sidebar-collapsed');
     renderSidebarHistory();
@@ -853,13 +853,45 @@
   }
 
   // --- Sidebar Render ---
+  // One row in the chat list (used for normal chats and for chats inside a project).
+  function makeChatItem(c, showProjectTag) {
+    const item = document.createElement('div');
+    item.className = `chat-history-item ${c.id === activeConversationId ? 'active' : ''}`;
+    const proj = showProjectTag ? projectOf(c) : null;
+    item.innerHTML = `
+      <span class="chat-title-text" title="${escapeHtml(c.title)}">${proj ? `<span class="chat-proj-tag" title="${escapeHtml(proj.name)}">📁</span> ` : ''}${escapeHtml(c.title)}</span>
+      <div class="chat-item-actions">
+        <button class="chat-item-action-btn move-btn" title="Move to project">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+          </svg>
+        </button>
+        <button class="chat-item-action-btn edit-btn" title="Rename chat">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+          </svg>
+        </button>
+        <button class="chat-item-action-btn delete-btn" title="Delete chat">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+          </svg>
+        </button>
+      </div>
+    `;
+    item.addEventListener('click', () => selectConversation(c.id));
+    item.querySelector('.move-btn').addEventListener('click', (e) => { e.stopPropagation(); openMoveMenu(e.currentTarget, c.id); });
+    item.querySelector('.edit-btn').addEventListener('click', (e) => renameConversation(c.id, e));
+    item.querySelector('.delete-btn').addEventListener('click', (e) => deleteConversation(c.id, e));
+    return item;
+  }
+
   function renderSidebarHistory(filterQuery = '') {
     chatHistoryContainer.innerHTML = '';
+    renderProjectsSidebar(filterQuery);
 
-    let filtered = conversations;
-    if (activeProjectId && activeProjectId !== 'all') {
-      filtered = filtered.filter(c => !c.projectId || c.projectId === activeProjectId || (activeProjectId === 'proj-default' && !c.projectId));
-    }
+    // Chats inside a project are listed under that project (like ChatGPT); the rest are listed here.
+    // While searching, every chat is searched.
+    let filtered = filterQuery ? conversations : conversations.filter(c => !projectOf(c));
 
     if (filterQuery) {
       const q = filterQuery.toLowerCase();
@@ -907,31 +939,7 @@
       titleEl.textContent = grp.title;
       chatHistoryContainer.appendChild(titleEl);
 
-      grp.items.forEach(c => {
-        const item = document.createElement('div');
-        item.className = `chat-history-item ${c.id === activeConversationId ? 'active' : ''}`;
-        item.innerHTML = `
-          <span class="chat-title-text" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</span>
-          <div class="chat-item-actions">
-            <button class="chat-item-action-btn edit-btn" title="Rename chat">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-              </svg>
-            </button>
-            <button class="chat-item-action-btn delete-btn" title="Delete chat">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-              </svg>
-            </button>
-          </div>
-        `;
-
-        item.addEventListener('click', () => selectConversation(c.id));
-        item.querySelector('.edit-btn').addEventListener('click', (e) => renameConversation(c.id, e));
-        item.querySelector('.delete-btn').addEventListener('click', (e) => deleteConversation(c.id, e));
-
-        chatHistoryContainer.appendChild(item);
-      });
+      grp.items.forEach(c => chatHistoryContainer.appendChild(makeChatItem(c, !!filterQuery)));
     });
   }
 
@@ -1394,7 +1402,7 @@
       let sawDone = false;
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           messages: conv.messages.slice(0, -1).slice(-6).map(m => ({
             role: m.role,
@@ -1409,7 +1417,7 @@
           systemPrompt: (settings.systemPrompt || '') + (voiceBriefMode ? '\n\nVOICE MODE: You are speaking aloud. Reply in 1-2 short, plain sentences (under 40 words). No markdown, lists, or code.' : ''),
           webSearch: isWebSearchActive,
           isImageMode: isPhotoGenerationActive,
-          projectId: conv.projectId || activeProjectId,
+          projectId: (conv.projectId && conv.projectId !== 'proj-default') ? conv.projectId : null,
           thinking: voiceBriefMode ? 'instant' : (settings.thinkingLevel || 'moderate'),
           responseLength: settings.responseLength || 'balanced',
           tone: settings.tone || 'default',
@@ -2252,6 +2260,7 @@
     if (sessionStarted) return;
     sessionStarted = true;
     scopeStorageToUser(userAccount);
+    try { loadProjects(); } catch (e) { console.error('loadProjects error', e); }
     try { loadConversations(); } catch (e) { console.error('loadConversations error', e); }
     try {
       if (conversations.length > 0) {
@@ -2709,93 +2718,229 @@
     }
   }
 
-  // --- Antigravity Projects Management ---
-  async function loadProjects() {
+  // --- Projects (ChatGPT-style): folders in the sidebar that group chats, rules and reference files ---
+  const PROJ_NONE = 'proj-default';
+  let expandedProjects = {};
+  let projectsSectionOpen = true;
+
+  function projUiKey(suffix) {
+    return 'nova_projui:' + ((userAccount && userAccount.id) || 'anon') + ':' + suffix;
+  }
+
+  function loadProjectUiState() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEYS.PROJECTS);
-      if (stored) {
-        projects = JSON.parse(stored);
-      }
-      const storedActive = localStorage.getItem(STORAGE_KEYS.ACTIVE_PROJECT);
-      if (storedActive) {
-        activeProjectId = storedActive;
-      }
-      const res = await fetch('/api/projects');
+      expandedProjects = JSON.parse(localStorage.getItem(projUiKey('open')) || '{}') || {};
+      projectsSectionOpen = localStorage.getItem(projUiKey('section')) !== '0';
+    } catch (e) { expandedProjects = {}; projectsSectionOpen = true; }
+  }
+
+  function saveProjectUiState() {
+    try {
+      localStorage.setItem(projUiKey('open'), JSON.stringify(expandedProjects));
+      localStorage.setItem(projUiKey('section'), projectsSectionOpen ? '1' : '0');
+    } catch (e) {}
+  }
+
+  function projectOf(conv) {
+    if (!conv || !conv.projectId || conv.projectId === PROJ_NONE) return null;
+    return projects.find(p => p.id === conv.projectId) || null;
+  }
+
+  function projectsCacheKey() {
+    return 'nova_projects:' + ((userAccount && userAccount.id) || 'anon');
+  }
+
+  async function loadProjects() {
+    // Projects belong to the signed-in account (stored on the server); a copy is cached per account on this device.
+    try { localStorage.removeItem('kazai_projects'); localStorage.removeItem('kazai_active_project'); } catch (e) {}
+    projects = [];
+    try {
+      const cached = localStorage.getItem(projectsCacheKey());
+      if (cached) projects = (JSON.parse(cached) || []).filter(p => p && p.id !== PROJ_NONE);
+    } catch (e) { projects = []; }
+    loadProjectUiState();
+    renderSidebarHistory(chatSearchInput ? chatSearchInput.value : '');
+    updateActiveProjectUI();
+    try {
+      const res = await fetch('/api/projects', { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
-        if (data.projects && data.projects.length > 0) {
-          projects = data.projects;
-          localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(projects));
-        }
+        projects = (data.projects || []).filter(p => p && p.id !== PROJ_NONE);
+        localStorage.setItem(projectsCacheKey(), JSON.stringify(projects));
       }
     } catch (e) {
       console.warn('Notice loading projects:', e);
     }
-
-    if (!projects || projects.length === 0) {
-      projects = [{
-        id: 'proj-default',
-        name: 'General Workspace',
-        description: 'Main workspace for coding, general inquiries, and problem solving',
-        instructions: 'You are Nova Insight, an expert AI assistant. Provide concise, clear, and high-quality responses.',
-        files: []
-      }];
-    }
-
-    renderProjectsDropdown();
-    updateActiveProjectUI();
+    renderSidebarHistory(chatSearchInput ? chatSearchInput.value : '');
+    syncActiveProject();
+    if (typeof updateAccountStats === 'function') updateAccountStats();
   }
 
-  function renderProjectsDropdown() {
-    if (!projectListContainer) return;
-    projectListContainer.innerHTML = '';
-
-    projects.forEach(p => {
-      const opt = document.createElement('div');
-      opt.className = `project-item-option ${p.id === activeProjectId ? 'active' : ''}`;
-      opt.innerHTML = `
-        <span class="proj-title">📁 ${escapeHtml(p.name)}</span>
-        ${p.id === activeProjectId ? '<span style="font-size: 11px; color: var(--brand-green);">✓</span>' : ''}
-      `;
-      opt.addEventListener('click', () => {
-        selectProject(p.id);
-        toggleProjectDropdown(false);
-      });
-      projectListContainer.appendChild(opt);
-    });
+  function cacheProjects() {
+    try { localStorage.setItem(projectsCacheKey(), JSON.stringify(projects)); } catch (e) {}
   }
 
-  function selectProject(projectId) {
-    activeProjectId = projectId;
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_PROJECT, activeProjectId);
-    updateActiveProjectUI();
-    renderProjectsDropdown();
-    renderSidebarHistory();
-
-    const conv = getActiveConversation();
-    if (conv && conv.projectId && conv.projectId !== activeProjectId) {
-      const projectConv = conversations.find(c => c.projectId === activeProjectId);
-      if (projectConv) {
-        selectConversation(projectConv.id);
-      } else {
-        createNewConversation();
-      }
+  function syncActiveProject() {
+    const p = projectOf(getActiveConversation());
+    activeProjectId = p ? p.id : PROJ_NONE;
+    if (p && !expandedProjects[p.id]) {
+      expandedProjects[p.id] = true;
+      saveProjectUiState();
     }
-    const currProj = projects.find(p => p.id === activeProjectId);
-    showToast(`Switched to: ${currProj ? currProj.name : 'Workspace'}`);
+    updateActiveProjectUI();
   }
 
   function updateActiveProjectUI() {
-    const curr = projects.find(p => p.id === activeProjectId) || projects[0] || { name: 'General Workspace' };
-    if (currentProjectName) currentProjectName.textContent = curr.name;
-    if (topNavProjectName) topNavProjectName.textContent = curr.name;
+    const p = projects.find(x => x.id === activeProjectId);
+    if (topNavProjectBadge) topNavProjectBadge.style.display = p ? '' : 'none';
+    if (topNavProjectName && p) topNavProjectName.textContent = p.name;
   }
 
-  function toggleProjectDropdown(forceState) {
-    if (!projectDropdownMenu) return;
-    const isOpen = projectDropdownMenu.style.display !== 'none';
-    const nextState = forceState !== undefined ? forceState : !isOpen;
-    projectDropdownMenu.style.display = nextState ? 'block' : 'none';
+  const FOLDER_SVG = '<svg class="icon sp-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+  const CHEV_SVG = '<svg class="icon sp-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+
+  function renderProjectsSidebar(filterQuery) {
+    const wrap = document.getElementById('sidebarProjects');
+    if (!wrap || !projectListContainer) return;
+    wrap.classList.toggle('sp-hidden', !!filterQuery);
+    wrap.classList.toggle('sp-collapsed', !projectsSectionOpen);
+    const toggle = document.getElementById('spToggle');
+    if (toggle) toggle.setAttribute('aria-expanded', projectsSectionOpen ? 'true' : 'false');
+    projectListContainer.innerHTML = '';
+
+    if (!projects.length) {
+      const empty = document.createElement('button');
+      empty.type = 'button';
+      empty.className = 'sp-empty';
+      empty.innerHTML = '<span>＋ New project</span><small>Keep chats, instructions and files together</small>';
+      empty.addEventListener('click', () => openProjectModal('new'));
+      projectListContainer.appendChild(empty);
+      return;
+    }
+
+    projects.forEach(p => {
+      const chats = conversations
+        .filter(c => c.projectId === p.id)
+        .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+      const open = !!expandedProjects[p.id];
+      const holdsActive = chats.some(c => c.id === activeConversationId);
+      const box = document.createElement('div');
+      box.className = 'sp-proj' + (open ? ' open' : '') + (holdsActive ? ' has-active' : '');
+
+      const head = document.createElement('div');
+      head.className = 'sp-proj-head';
+      head.innerHTML = `<button type="button" class="sp-row" title="${escapeHtml(p.name)}">${CHEV_SVG}${FOLDER_SVG}<span class="sp-name">${escapeHtml(p.name)}</span><span class="sp-count">${chats.length || ''}</span></button>` +
+        `<button type="button" class="sp-more" title="Project options" aria-label="Project options"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>`;
+      head.querySelector('.sp-row').addEventListener('click', () => {
+        expandedProjects[p.id] = !open;
+        saveProjectUiState();
+        renderProjectsSidebar(filterQuery);
+      });
+      head.querySelector('.sp-more').addEventListener('click', (e) => {
+        e.stopPropagation();
+        showPopupMenu(e.currentTarget, [
+          { label: 'New chat in project', onClick: () => newChatInProject(p.id) },
+          { label: 'Project rules & files', onClick: () => openProjectModal(p.id) },
+          { label: 'Delete project', danger: true, onClick: () => deleteProject(p.id) }
+        ]);
+      });
+      box.appendChild(head);
+
+      if (open) {
+        const body = document.createElement('div');
+        body.className = 'sp-chats';
+        chats.forEach(c => body.appendChild(makeChatItem(c, false)));
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'sp-newchat';
+        add.textContent = '＋ New chat in project';
+        add.addEventListener('click', () => newChatInProject(p.id));
+        body.appendChild(add);
+        box.appendChild(body);
+      }
+      projectListContainer.appendChild(box);
+    });
+  }
+
+  function newChatInProject(projectId) {
+    expandedProjects[projectId] = true;
+    saveProjectUiState();
+    createNewConversation(projectId);
+  }
+
+  // Small floating menu (project options, "move chat to project")
+  let popupMenuEl = null;
+  function closePopupMenu() {
+    if (popupMenuEl) { popupMenuEl.remove(); popupMenuEl = null; }
+  }
+
+  function showPopupMenu(anchor, items) {
+    closePopupMenu();
+    const menu = document.createElement('div');
+    menu.className = 'sp-popup';
+    items.forEach(it => {
+      if (it.header) {
+        const hd = document.createElement('div');
+        hd.className = 'sp-popup-head';
+        hd.textContent = it.header;
+        menu.appendChild(hd);
+        return;
+      }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sp-popup-item' + (it.danger ? ' danger' : '') + (it.active ? ' active' : '');
+      b.innerHTML = `<span>${escapeHtml(it.label)}</span>${it.active ? '<span class="sp-check">✓</span>' : ''}`;
+      b.addEventListener('click', (e) => { e.stopPropagation(); closePopupMenu(); it.onClick(); });
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    let left = Math.min(Math.max(8, r.left), window.innerWidth - mw - 8);
+    let top = r.bottom + 4;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    popupMenuEl = menu;
+    setTimeout(() => {
+      document.addEventListener('click', closePopupMenu, { once: true });
+    }, 0);
+  }
+
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePopupMenu(); });
+  window.addEventListener('resize', closePopupMenu);
+
+  function openMoveMenu(anchor, convId) {
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv) return;
+    const items = [{ header: 'Move to project' }];
+    projects.forEach(p => {
+      items.push({
+        label: p.name,
+        active: conv.projectId === p.id,
+        onClick: () => moveConversationToProject(convId, p.id)
+      });
+    });
+    if (projectOf(conv)) {
+      items.push({ label: 'Remove from project', onClick: () => moveConversationToProject(convId, PROJ_NONE) });
+    }
+    items.push({ label: '＋ New project…', onClick: () => { pendingMoveConvId = convId; openProjectModal('new'); } });
+    showPopupMenu(anchor, items);
+  }
+
+  let pendingMoveConvId = null;
+
+  function moveConversationToProject(convId, projectId) {
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv) return;
+    conv.projectId = projectId;
+    if (projectId !== PROJ_NONE) expandedProjects[projectId] = true;
+    saveProjectUiState();
+    saveConversations();
+    if (convId === activeConversationId) syncActiveProject();
+    const p = projects.find(x => x.id === projectId);
+    showToast(p ? `Moved to ${p.name}` : 'Removed from project');
   }
 
   function openProjectModal(projectId = null) {
@@ -2807,16 +2952,17 @@
       instructions: '',
       files: []
     };
+    if (!isNew && !proj.id) { showToast('Project not found'); return; }
 
     if (projectModalTitle) {
-      projectModalTitle.textContent = isNew ? 'Create New Project' : (proj.id === 'proj-default' ? 'General Workspace Rules' : `Project: ${proj.name || 'Edit'}`);
+      projectModalTitle.textContent = isNew ? 'New project' : `Project: ${proj.name || 'Edit'}`;
     }
     if (projectNameInput) projectNameInput.value = proj.name || '';
     if (projectDescInput) projectDescInput.value = proj.description || '';
     if (projectInstructionsInput) projectInstructionsInput.value = proj.instructions || '';
-    
+
     if (deleteProjectBtn) {
-      deleteProjectBtn.style.display = (!isNew && proj.id !== 'proj-default') ? 'block' : 'none';
+      deleteProjectBtn.style.display = !isNew ? 'block' : 'none';
     }
 
     if (projectNewFileContent) {
@@ -2827,6 +2973,7 @@
 
     renderProjectFilesList(proj.files || []);
     if (projectModal) projectModal.style.display = 'flex';
+    if (isNew && projectNameInput) setTimeout(() => projectNameInput.focus(), 50);
   }
 
   function renderProjectFilesList(files) {
@@ -2860,7 +3007,8 @@
 
     const desc = projectDescInput.value.trim();
     const instructions = projectInstructionsInput.value.trim();
-    
+    const wasNew = !editingProjectId || editingProjectId === 'new';
+
     let existing = projects.find(p => p.id === editingProjectId);
     let files = existing ? (existing.files || []) : [];
 
@@ -2872,7 +3020,7 @@
     }
 
     const projPayload = {
-      id: editingProjectId && editingProjectId !== 'new' ? editingProjectId : null,
+      id: wasNew ? null : editingProjectId,
       name: name,
       description: desc,
       instructions: instructions,
@@ -2882,9 +3030,10 @@
     try {
       const res = await fetch('/api/projects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(projPayload)
       });
+      if (res.status === 401) { showToast('Please sign in again to save projects'); return; }
       if (res.ok) {
         const data = await res.json();
         const saved = data.project;
@@ -2894,14 +3043,24 @@
         } else {
           projects.push(saved);
         }
-        activeProjectId = saved.id;
-        localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(projects));
-        localStorage.setItem(STORAGE_KEYS.ACTIVE_PROJECT, activeProjectId);
-        renderProjectsDropdown();
-        updateActiveProjectUI();
-        renderSidebarHistory();
+        cacheProjects();
+        expandedProjects[saved.id] = true;
+        saveProjectUiState();
         if (projectModal) projectModal.style.display = 'none';
-        showToast('Project saved successfully');
+        if (wasNew && pendingMoveConvId) {
+          const cid = pendingMoveConvId;
+          pendingMoveConvId = null;
+          moveConversationToProject(cid, saved.id);
+        } else if (wasNew) {
+          createNewConversation(saved.id);
+        } else {
+          renderSidebarHistory(chatSearchInput ? chatSearchInput.value : '');
+          updateActiveProjectUI();
+        }
+        if (typeof updateAccountStats === 'function') updateAccountStats();
+        showToast(wasNew ? `Project "${saved.name}" created` : 'Project saved');
+      } else {
+        showToast('Could not save the project');
       }
     } catch (e) {
       console.error('Error saving project', e);
@@ -2909,26 +3068,35 @@
     }
   }
 
-  async function deleteCurrentProject() {
-    if (!editingProjectId || editingProjectId === 'proj-default') return;
-    if (!confirm('Are you sure you want to delete this project?')) return;
+  async function deleteProject(projectId) {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+    if (!confirm(`Delete the project "${proj.name}"?\n\nIts chats are kept and moved back to your normal chat list.`)) return;
 
     try {
-      const res = await fetch(`/api/projects/${editingProjectId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE', headers: getAuthHeaders() });
       if (res.ok) {
-        projects = projects.filter(p => p.id !== editingProjectId);
-        activeProjectId = 'proj-default';
-        localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(projects));
-        localStorage.setItem(STORAGE_KEYS.ACTIVE_PROJECT, activeProjectId);
-        renderProjectsDropdown();
-        updateActiveProjectUI();
-        renderSidebarHistory();
+        projects = projects.filter(p => p.id !== projectId);
+        cacheProjects();
+        delete expandedProjects[projectId];
+        saveProjectUiState();
+        conversations.forEach(c => { if (c.projectId === projectId) c.projectId = PROJ_NONE; });
+        saveConversations();
+        syncActiveProject();
         if (projectModal) projectModal.style.display = 'none';
+        if (typeof updateAccountStats === 'function') updateAccountStats();
         showToast('Project deleted');
+      } else {
+        showToast('Could not delete the project');
       }
     } catch (e) {
       console.error('Error deleting project', e);
     }
+  }
+
+  function deleteCurrentProject() {
+    if (!editingProjectId || editingProjectId === 'new') return;
+    deleteProject(editingProjectId);
   }
 
   // --- Photo Mode & Lightbox ---
@@ -3007,10 +3175,11 @@
           geminiApiKey: settings.geminiApiKey,
           claudeApiKey: settings.claudeApiKey,
           baseUrl: settings.baseUrl,
-          projectId: conv.projectId || activeProjectId,
+          projectId: (conv.projectId && conv.projectId !== 'proj-default') ? conv.projectId : null,
           nickname: (settings.nickname || (userAccount && userAccount.name) || ''),
           systemPrompt: settings.systemPrompt || ''
         },
+        headers: getAuthHeaders(),
         onUpdate
       });
       if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
@@ -3120,34 +3289,25 @@
       });
     }
 
-    // Projects Dropdown & Modal triggers
-    if (projectSelectorBtn) {
-      projectSelectorBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleProjectDropdown();
-      });
-    }
-    document.addEventListener('click', (e) => {
-      if (projectDropdownMenu && !e.target.closest('#projectSelectorWrap')) {
-        toggleProjectDropdown(false);
-      }
-    });
+    // Projects (sidebar section) & modal triggers
     if (addProjectBtn) {
       addProjectBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleProjectDropdown(false);
+        pendingMoveConvId = null;
         openProjectModal('new');
       });
     }
-    if (manageProjectsBtn) {
-      manageProjectsBtn.addEventListener('click', () => {
-        toggleProjectDropdown(false);
-        openProjectModal(activeProjectId);
+    const spToggleBtn = document.getElementById('spToggle');
+    if (spToggleBtn) {
+      spToggleBtn.addEventListener('click', () => {
+        projectsSectionOpen = !projectsSectionOpen;
+        saveProjectUiState();
+        renderProjectsSidebar(chatSearchInput ? chatSearchInput.value : '');
       });
     }
     if (topNavProjectBadge) {
       topNavProjectBadge.addEventListener('click', () => {
-        openProjectModal(activeProjectId);
+        if (activeProjectId && activeProjectId !== PROJ_NONE) openProjectModal(activeProjectId);
       });
     }
     if (closeProjectBtn) {
