@@ -915,7 +915,7 @@ async def register_account(req: RegisterRequest):
         "name": clean_name,
         "username": clean_username,
         "password": hash_password(req.password),
-        "avatar": req.avatar or "⚡",
+        "avatar": _clean_avatar(req.avatar),
         "isCreator": False,
         "createdAt": now,
         "updatedAt": now
@@ -950,6 +950,17 @@ async def logout_account(request: Request):
         save_sessions(ACTIVE_SESSIONS)
     return {"success": True, "message": "Logged out"}
 
+_PHOTO_AVATAR_RE = re.compile(r"^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$")
+
+def _clean_avatar(value: Optional[str], default: str = "\u26a1") -> str:
+    """An avatar is either a short emoji or a small uploaded photo (data URL, max ~120 KB)."""
+    v = (value or "").strip()
+    if not v:
+        return default
+    if v.startswith("data:image/"):
+        return v if (len(v) <= 160000 and _PHOTO_AVATAR_RE.match(v)) else default
+    return v[:8]
+
 @app.post("/api/account")
 async def update_account_profile(req: AccountUpdate, request: Request):
     user = get_current_user_from_request(request)
@@ -962,7 +973,7 @@ async def update_account_profile(req: AccountUpdate, request: Request):
             if req.name and req.name.strip():
                 u["name"] = req.name.strip()
             if req.avatar:
-                u["avatar"] = req.avatar
+                u["avatar"] = _clean_avatar(req.avatar, u.get("avatar") or "\u26a1")
             if req.password:
                 u["password"] = hash_password(req.password)
             u["updatedAt"] = time.time()
@@ -1111,6 +1122,147 @@ async def generate_chat_title(req: TitleRequest):
     if not title or len(title) > 60 or "pollinations" in title.lower():
         return {"title": ""}
     return {"title": title[:48]}
+
+# ----------------- Vision: Nova "looks" at photos and video frames -----------------
+# The text engine cannot see, so free vision models on Hugging Face describe each picture first.
+# Order: JoyCaption (detailed, can read text), Florence-2 (fast), BLIP (short, last resort).
+# The GPU ones share a free daily quota, so the next one is tried when a Space says no.
+VISION_SPACES = [
+    ("joycaption", "https://fancyfeast-joy-caption-beta-one.hf.space", "chat_joycaption"),
+    ("florence", "https://prithivmlmods-florence-2-image-caption.hf.space", "describe_image"),
+    ("blip", "https://tonyassi-blip-image-captioning-large.hf.space", "predict"),
+]
+_VISION_CACHE: Dict[str, str] = {}
+_VISION_SEM = asyncio.Semaphore(2)
+_VISION_USAGE: Dict[str, List[float]] = {}
+
+class VisionRequest(BaseModel):
+    images: List[str]
+    kind: Optional[str] = "image"
+    hint: Optional[str] = ""
+
+async def _gradio_run(base: str, api: str, build, jpeg: bytes, timeout_s: float):
+    """Upload one image to a Gradio Space, call an endpoint and return its final output list (or None)."""
+    headers = {"User-Agent": "NovaInsight/1.0"}
+    if HF_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_TOKEN}"
+    timeout = httpx.Timeout(connect=8.0, read=timeout_s, write=25.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        up = None
+        for pre in ("/gradio_api", ""):
+            r = await client.post(base + pre + "/upload", files={"files": ("image.jpg", jpeg, "image/jpeg")}, headers=headers)
+            if r.status_code == 200:
+                up = (pre, r.json()[0])
+                break
+        if not up:
+            return None
+        pre, path = up
+        file_data = {"path": path, "meta": {"_type": "gradio.FileData"}}
+        r = await client.post(base + pre + "/call/" + api, json={"data": build(file_data)}, headers=headers)
+        if r.status_code != 200:
+            return None
+        event_id = (r.json() or {}).get("event_id")
+        if not event_id:
+            return None
+        result = None
+        event = None
+        async with client.stream("GET", base + pre + "/call/" + api + "/" + event_id, headers=headers) as resp:
+            if resp.status_code != 200:
+                return None
+            async for line in resp.aiter_lines():
+                if line.startswith("event:"):
+                    event = line[6:].strip()
+                elif line.startswith("data:"):
+                    if event == "error":
+                        return None
+                    if event in ("generating", "complete"):
+                        try:
+                            result = json.loads(line[5:].strip())
+                        except Exception:
+                            pass
+                    if event == "complete":
+                        break
+        return result
+
+def _vision_prompt(kind: str, hint: str) -> str:
+    if kind == "video":
+        p = ("Describe this video frame in two or three sentences: who or what is visible, what is happening and the setting. "
+             "Transcribe any readable text exactly.")
+    else:
+        p = ("Describe this image in detail: the main subjects, what they are doing, colors, setting and mood. "
+             "If there is any readable text, transcribe it exactly.")
+    if hint:
+        p += f' The user asks: "{hint[:200]}". Make sure the description includes the details needed to answer that.'
+    return p
+
+async def _caption_one(jpeg: bytes, kind: str, hint: str) -> str:
+    import hashlib as _hl
+    key = _hl.sha1(jpeg).hexdigest() + ":" + kind
+    if key in _VISION_CACHE:
+        return _VISION_CACHE[key]
+    prompt = _vision_prompt(kind, hint)
+    max_tokens = 150 if kind == "video" else 330
+    for name, base, api in VISION_SPACES:
+        if name == "joycaption":
+            build = lambda fd: [fd, prompt, 0.5, 0.9, max_tokens, False]
+        elif name == "blip":
+            build = lambda fd: [fd, 25, 110]
+        else:
+            build = lambda fd: [fd, "Florence-2-base"]
+        try:
+            async with _VISION_SEM:
+                out = await asyncio.wait_for(_gradio_run(base, api, build, jpeg, 70.0), timeout=95.0)
+        except Exception as e:
+            print(f"vision {name} failed: {type(e).__name__}: {str(e)[:80]}")
+            continue
+        text = ""
+        if isinstance(out, list) and out:
+            text = out[0] if isinstance(out[0], str) else ""
+        elif isinstance(out, str):
+            text = out
+        if name == "blip":
+            text = (text or "").split("\n")[0]  # the Space appends a "Took N seconds" line
+        text = re.sub(r"\s+", " ", text or "").strip()
+        if len(text) >= 8:
+            if len(_VISION_CACHE) > 200:
+                _VISION_CACHE.clear()
+            _VISION_CACHE[key] = text
+            return text
+        print(f"vision {name} returned nothing usable")
+    return ""
+
+@app.post("/api/vision")
+async def describe_images(req: VisionRequest, http_request: Request):
+    """Describe up to 5 photos (or video frames) so the chat model can talk about them."""
+    user = get_current_user_from_request(http_request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Please sign in to send photos and videos.")
+    imgs = [i for i in (req.images or []) if isinstance(i, str)][:5]
+    if not imgs:
+        raise HTTPException(status_code=400, detail="No images received.")
+    now = time.time()
+    used = [t for t in _VISION_USAGE.get(user["id"], []) if now - t < 3600]
+    if len(used) + len(imgs) > 80:
+        raise HTTPException(status_code=429, detail="Too many photos this hour. Please try again later.")
+    _VISION_USAGE[user["id"]] = used + [now] * len(imgs)
+    kind = "video" if (req.kind or "") == "video" else "image"
+    hint = (req.hint or "").strip()[:300]
+
+    import base64 as _b64
+    blobs = []
+    for d in imgs:
+        m = re.match(r"^data:image/(jpeg|png|webp);base64,(.+)$", d, re.S)
+        if not m:
+            raise HTTPException(status_code=400, detail="Unsupported image format.")
+        try:
+            raw = _b64.b64decode(m.group(2), validate=False)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Bad image data.")
+        if len(raw) > 1_500_000:
+            raise HTTPException(status_code=413, detail="Image is too large.")
+        blobs.append(raw)
+    captions = await asyncio.gather(*[_caption_one(b, kind, hint) for b in blobs])
+    return {"captions": list(captions), "ok": any(captions)}
 
 @app.get("/api/models")
 async def get_models():
