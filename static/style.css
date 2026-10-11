@@ -3062,3 +3062,204 @@ body.compact-chat .message-bubble.assistant p { margin-bottom: 6px; }
   }
   .voice-mode-pill-btn .voice-btn-text { display: inline !important; }
 }
+
+/* ==========================================================================
+   Galaxy theme: loading screen, start screen & finishing touches
+   (follows the app's light / dark mode via body.theme-light / body.theme-dark)
+   ========================================================================== */
+:root {
+  --galaxy-violet: #8b5cf6;
+  --galaxy-blue: #3b82f6;
+  --galaxy-pink: #ec4899;
+  --galaxy-cyan: #22d3ee;
+}
+
+/* ---- Loading screen ---- */
+.app-splash-screen {
+  --sp-star: rgba(99, 70, 200, 0.55);
+  --sp-star-2: rgba(236, 72, 153, 0.45);
+  background:
+    radial-gradient(ellipse 80% 60% at 18% 12%, rgba(196, 181, 253, 0.65), transparent 62%),
+    radial-gradient(ellipse 70% 60% at 88% 82%, rgba(147, 197, 253, 0.65), transparent 62%),
+    radial-gradient(ellipse 60% 50% at 82% 8%, rgba(251, 207, 232, 0.70), transparent 62%),
+    linear-gradient(160deg, #faf7ff 0%, #eef2ff 55%, #fff1f9 100%);
+  overflow: hidden;
+}
+body.theme-dark .app-splash-screen {
+  --sp-star: rgba(255, 255, 255, 0.95);
+  --sp-star-2: rgba(167, 139, 250, 0.95);
+  background:
+    radial-gradient(ellipse 80% 60% at 18% 12%, rgba(124, 58, 237, 0.42), transparent 62%),
+    radial-gradient(ellipse 70% 60% at 88% 82%, rgba(37, 99, 235, 0.38), transparent 62%),
+    radial-gradient(ellipse 60% 50% at 82% 8%, rgba(219, 39, 119, 0.25), transparent 62%),
+    linear-gradient(160deg, #0a0620 0%, #05030f 60%, #0b0722 100%);
+}
+/* two twinkling star layers */
+.app-splash-screen::before,
+.app-splash-screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-repeat: repeat;
+}
+.app-splash-screen::before {
+  background-image:
+    radial-gradient(1.4px 1.4px at 20px 30px, var(--sp-star), transparent 60%),
+    radial-gradient(1px 1px at 90px 120px, var(--sp-star), transparent 60%),
+    radial-gradient(1.6px 1.6px at 160px 60px, var(--sp-star), transparent 60%),
+    radial-gradient(1px 1px at 210px 180px, var(--sp-star), transparent 60%),
+    radial-gradient(1.2px 1.2px at 60px 200px, var(--sp-star), transparent 60%);
+  background-size: 250px 250px;
+  animation: spTwinkle 3.2s ease-in-out infinite alternate;
+}
+.app-splash-screen::after {
+  background-image:
+    radial-gradient(2px 2px at 50px 90px, var(--sp-star-2), transparent 60%),
+    radial-gradient(1.6px 1.6px at 180px 150px, var(--sp-star-2), transparent 60%),
+    radial-gradient(2.2px 2.2px at 120px 20px, var(--sp-star), transparent 60%),
+    radial-gradient(1.4px 1.4px at 230px 230px, var(--sp-star-2), transparent 60%);
+  background-size: 330px 330px;
+  background-position: 40px 70px;
+  animation: spTwinkle 4.6s ease-in-out 1s infinite alternate-reverse;
+}
+@keyframes spTwinkle { from { opacity: 0.25; } to { opacity: 1; } }
+.splash-inner { position: relative; z-index: 2; }
+
+.splash-logo-container { width: 132px; height: 132px; }
+.splash-logo-icon {
+  width: 104px; height: 104px; border-radius: 26px;
+  box-shadow: 0 14px 40px rgba(76, 29, 149, 0.35), 0 0 42px rgba(139, 92, 246, 0.55);
+}
+/* swirling galaxy ring behind the logo */
+.splash-aura-glow {
+  width: 178px; height: 178px; border-radius: 50%; filter: none; z-index: 1;
+  background: conic-gradient(from 0deg, transparent 0deg, rgba(139, 92, 246, 0.85) 90deg, rgba(34, 211, 238, 0.75) 170deg, rgba(236, 72, 153, 0.8) 250deg, transparent 330deg);
+  -webkit-mask: radial-gradient(circle, transparent 55%, #000 58%, #000 68%, transparent 72%);
+          mask: radial-gradient(circle, transparent 55%, #000 58%, #000 68%, transparent 72%);
+  animation: spSpin 3.4s linear infinite;
+}
+.splash-pulse-ring {
+  width: 150px; height: 150px; border-radius: 50%;
+  border: 1.5px solid rgba(139, 92, 246, 0.55);
+  animation: pulseRing 2.2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+/* a small star orbiting the logo */
+.splash-orbit {
+  position: absolute; width: 178px; height: 178px; border-radius: 50%; z-index: 3;
+  background: radial-gradient(circle at 50% 0%, #ffffff 0 2.5px, rgba(167, 139, 250, 0.95) 3.5px, rgba(167, 139, 250, 0) 8px);
+  animation: spSpin 5.2s linear infinite reverse;
+}
+@keyframes spSpin { to { transform: rotate(360deg); } }
+
+.splash-title {
+  background: linear-gradient(135deg, #4c1d95 0%, #2563eb 55%, #db2777 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+body.theme-dark .splash-title {
+  background: linear-gradient(135deg, #ffffff 0%, #c4b5fd 50%, #67e8f9 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.splash-subtitle { color: rgba(49, 46, 129, 0.65); }
+body.theme-dark .splash-subtitle { color: rgba(226, 232, 240, 0.72); }
+.splash-credit { margin-top: 6px; font-size: 11px; letter-spacing: 0.4px; color: rgba(49, 46, 129, 0.5); }
+body.theme-dark .splash-credit { color: rgba(226, 232, 240, 0.5); }
+.splash-progress-track { background: rgba(99, 102, 241, 0.16); }
+body.theme-dark .splash-progress-track { background: rgba(255, 255, 255, 0.12); }
+.splash-progress-bar {
+  background: linear-gradient(90deg, #8b5cf6, #38bdf8, #ec4899);
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.7);
+  animation-duration: 1.6s;
+}
+
+/* ---- Start screen (name / password) ---- */
+.auth-gate {
+  background:
+    radial-gradient(ellipse 80% 60% at 15% 5%, rgba(196, 181, 253, 0.6), transparent 62%),
+    radial-gradient(ellipse 70% 60% at 90% 95%, rgba(147, 197, 253, 0.6), transparent 62%),
+    radial-gradient(ellipse 55% 45% at 85% 10%, rgba(251, 207, 232, 0.65), transparent 62%),
+    linear-gradient(160deg, #faf7ff, #eef2ff 55%, #fff1f9);
+}
+body.theme-dark .auth-gate {
+  background:
+    radial-gradient(ellipse 80% 60% at 15% 5%, rgba(124, 58, 237, 0.4), transparent 62%),
+    radial-gradient(ellipse 70% 60% at 90% 95%, rgba(37, 99, 235, 0.36), transparent 62%),
+    radial-gradient(ellipse 55% 45% at 85% 10%, rgba(219, 39, 119, 0.22), transparent 62%),
+    linear-gradient(160deg, #0a0620, #05030f 60%, #0b0722);
+}
+.auth-gate::before {
+  content: ''; position: fixed; inset: 0; pointer-events: none;
+  background-image:
+    radial-gradient(1.4px 1.4px at 20px 30px, rgba(99, 70, 200, 0.5), transparent 60%),
+    radial-gradient(1px 1px at 90px 120px, rgba(99, 70, 200, 0.5), transparent 60%),
+    radial-gradient(1.6px 1.6px at 160px 60px, rgba(236, 72, 153, 0.4), transparent 60%),
+    radial-gradient(1.2px 1.2px at 210px 180px, rgba(99, 70, 200, 0.5), transparent 60%);
+  background-size: 260px 260px;
+  animation: spTwinkle 4s ease-in-out infinite alternate;
+}
+body.theme-dark .auth-gate::before {
+  background-image:
+    radial-gradient(1.4px 1.4px at 20px 30px, rgba(255, 255, 255, 0.9), transparent 60%),
+    radial-gradient(1px 1px at 90px 120px, rgba(255, 255, 255, 0.8), transparent 60%),
+    radial-gradient(1.6px 1.6px at 160px 60px, rgba(196, 181, 253, 0.9), transparent 60%),
+    radial-gradient(1.2px 1.2px at 210px 180px, rgba(255, 255, 255, 0.8), transparent 60%);
+}
+.auth-card {
+  position: relative; z-index: 1;
+  background: rgba(255, 255, 255, 0.78);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  border: 1px solid rgba(139, 92, 246, 0.22);
+  box-shadow: 0 24px 60px -20px rgba(76, 29, 149, 0.35);
+}
+body.theme-dark .auth-card {
+  background: rgba(20, 14, 48, 0.72);
+  border-color: rgba(167, 139, 250, 0.28);
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.7), 0 0 40px -10px rgba(124, 58, 237, 0.35);
+}
+.auth-logo { box-shadow: 0 10px 30px -8px rgba(124, 58, 237, 0.6), 0 0 28px rgba(139, 92, 246, 0.35); }
+.auth-input:focus { border-color: var(--galaxy-violet); box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.18); }
+.auth-chip { background: rgba(139, 92, 246, 0.14); color: #7c3aed; }
+body.theme-dark .auth-chip { color: #c4b5fd; }
+.auth-btn {
+  background: linear-gradient(135deg, #7c3aed, #3b82f6 60%, #22d3ee);
+  box-shadow: 0 10px 24px -10px rgba(124, 58, 237, 0.7);
+}
+
+/* ---- Finishing touches: galaxy accents across the app ---- */
+.assistant-avatar { box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.35), 0 2px 12px rgba(124, 58, 237, 0.4); }
+@keyframes novaAvatarPulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.35), 0 0 8px rgba(139, 92, 246, 0.4); }
+  50% { box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.55), 0 0 20px rgba(139, 92, 246, 0.85); }
+}
+.badge-logo { box-shadow: 0 0 10px rgba(139, 92, 246, 0.5); }
+.welcome-logo img { box-shadow: 0 8px 30px rgba(124, 58, 237, 0.4), 0 0 54px rgba(139, 92, 246, 0.3); }
+.typing-cursor {
+  background: radial-gradient(circle, #ffffff 0%, #a78bfa 55%, #ec4899 100%);
+  box-shadow: 0 0 10px rgba(167, 139, 250, 0.9);
+}
+/* a soft nebula behind the empty-chat welcome screen */
+.welcome-container { position: relative; }
+.welcome-container::before {
+  content: ''; position: absolute; z-index: -1; left: 50%; top: 30%;
+  width: min(560px, 92vw); height: 340px; transform: translate(-50%, -50%);
+  background:
+    radial-gradient(ellipse at 35% 45%, rgba(139, 92, 246, 0.16), transparent 62%),
+    radial-gradient(ellipse at 70% 55%, rgba(59, 130, 246, 0.13), transparent 62%),
+    radial-gradient(ellipse at 55% 30%, rgba(236, 72, 153, 0.10), transparent 62%);
+  filter: blur(8px); pointer-events: none;
+}
+body.theme-dark .welcome-container::before {
+  background:
+    radial-gradient(ellipse at 35% 45%, rgba(139, 92, 246, 0.28), transparent 62%),
+    radial-gradient(ellipse at 70% 55%, rgba(59, 130, 246, 0.22), transparent 62%),
+    radial-gradient(ellipse at 55% 30%, rgba(236, 72, 153, 0.16), transparent 62%);
+}
+/* gentle polish: smooth theme switch and nicer selection / focus colours */
+body, .sidebar, .top-nav, .input-box-container, .message-bubble { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+::selection { background: rgba(139, 92, 246, 0.28); }
+:focus-visible { outline: 2px solid rgba(139, 92, 246, 0.7); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-aura-glow, .splash-orbit, .splash-pulse-ring,
+  .app-splash-screen::before, .app-splash-screen::after, .auth-gate::before { animation: none !important; }
+}
