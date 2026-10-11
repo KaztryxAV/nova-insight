@@ -808,6 +808,7 @@
     if (window.innerWidth <= 768) appLayout.classList.add('sidebar-collapsed');
     renderSidebarHistory();
     renderChatFeed();
+    playFeedSwitchAnim();
     messageInput.focus();
   }
 
@@ -951,9 +952,17 @@
     scrollToBottom();
   }
 
-  function appendMessageToDOM(msg, index) {
+  function playFeedSwitchAnim() {
+    const el = messagesContainer;
+    if (!el) return;
+    el.classList.remove('feed-switch');
+    void el.offsetWidth;
+    el.classList.add('feed-switch');
+  }
+
+  function appendMessageToDOM(msg, index, animate) {
     const row = document.createElement('div');
-    row.className = `message-row ${msg.role}`;
+    row.className = `message-row ${msg.role}${animate ? ' row-enter' : ''}`;
     row.id = `msg_${index}`;
 
     if (msg.role === 'user') {
@@ -1306,8 +1315,8 @@
     updateSendButtonState();
 
     // Render user message to DOM
-    appendMessageToDOM(userMsg, conv.messages.length - 1);
-    scrollToBottom();
+    appendMessageToDOM(userMsg, conv.messages.length - 1, true);
+    scrollToBottom(true);
 
     // Prepare Assistant placeholder
     const assistantMsg = {
@@ -1320,7 +1329,7 @@
 
     // Create Assistant DOM element
     const assistantRow = document.createElement('div');
-    assistantRow.className = 'message-row assistant';
+    assistantRow.className = 'message-row assistant row-enter';
     assistantRow.id = `msg_${assistantIdx}`;
     assistantRow.innerHTML = `
       <div class="assistant-avatar"><img src="/static/icon-192.png" alt="Nova Insight"></div>
@@ -1342,6 +1351,31 @@
     isStreaming = true;
     toggleStreamingUI(true);
     abortController = new AbortController();
+
+    // Smooth streaming: batch incoming words into ~18 renders/second (aligned to the screen refresh)
+    // instead of rebuilding the reply on every tiny chunk, and only follow along if the reader is at the bottom.
+    let streamRenderTimer = null;
+    let streamLive = true;
+    let lastStreamRender = 0;
+    const flushStreamRender = () => {
+      streamRenderTimer = null;
+      if (!streamLive) return;
+      lastStreamRender = performance.now();
+      const feed = chatScrollFeed;
+      const stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 160;
+      renderStreamingReply(assistantContentEl, assistantMsg.content, streamState);
+      if (stick && activeConversationId === conv.id && settings.autoScroll !== false) scrollToBottom();
+    };
+    const scheduleStreamRender = () => {
+      if (streamRenderTimer !== null) return;
+      const wait = Math.max(0, 55 - (performance.now() - lastStreamRender));
+      streamRenderTimer = setTimeout(() => requestAnimationFrame(flushStreamRender), wait);
+    };
+    const cancelStreamRender = () => {
+      streamLive = false;
+      if (streamRenderTimer !== null) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
+    };
+
 
     const MAX_RETRIES = 5;
     const RETRY_DELAYS = [1500, 4000, 8000, 15000, 25000];
@@ -1409,8 +1443,7 @@
                 }
                 if (data.delta) {
                   assistantMsg.content += data.delta;
-                  renderStreamingReply(assistantContentEl, assistantMsg.content, streamState);
-                  if (activeConversationId === conv.id && settings.autoScroll !== false) scrollToBottom();
+                  scheduleStreamRender();
                 }
                 if (data.done) {
                   sawDone = true;
@@ -1448,12 +1481,15 @@
       } catch (innerErr) {
         if (innerErr.name === 'AbortError' || innerErr.noRetry || attempt >= MAX_RETRIES) throw innerErr;
         if (assistantMsg.content.length > bestPartial.length) bestPartial = assistantMsg.content;
+        cancelStreamRender();
         assistantMsg.content = '';
         streamState.revealed = 0;
         setThinkingStatus(assistantContentEl, attempt === 0 ? 'Connection lost - reconnecting' : `Reconnecting (try ${attempt + 1} of ${MAX_RETRIES})`);
         await waitForConnection(RETRY_DELAYS[attempt] || 25000, abortController ? abortController.signal : null);
+        streamLive = true;
       }
       } // end retry loop
+      cancelStreamRender();
 
       // Finish streaming cleanly
       assistantContentEl.innerHTML = renderMarkdownWithCodeBlocks(assistantMsg.content);
@@ -1467,6 +1503,7 @@
       maybeGenerateTitle(conv);
 
     } catch (err) {
+      cancelStreamRender();
       if (err.name === 'AbortError') {
         assistantContentEl.innerHTML = renderMarkdownWithCodeBlocks(assistantMsg.content + ' *(Generation stopped)*');
       } else {
@@ -2158,8 +2195,12 @@
     sendBtn.disabled = !hasText && !hasAttachment;
   }
 
-  function scrollToBottom() {
-    chatScrollFeed.scrollTop = chatScrollFeed.scrollHeight;
+  function scrollToBottom(smooth) {
+    const feed = chatScrollFeed;
+    if (smooth === true) {
+      try { feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' }); return; } catch (e) {}
+    }
+    feed.scrollTop = feed.scrollHeight;
   }
 
   function showToast(message) {
@@ -3051,6 +3092,12 @@
     });
     sidebarOpenBtn.addEventListener('click', () => {
       appLayout.classList.remove('sidebar-collapsed');
+    });
+    // On phones the sidebar slides over the chat: tapping the dimmed area outside it closes it again
+    appLayout.addEventListener('click', (e) => {
+      if (window.innerWidth > 768 || appLayout.classList.contains('sidebar-collapsed')) return;
+      if (e.target.closest('.sidebar') || e.target.closest('#sidebarOpenBtn')) return;
+      appLayout.classList.add('sidebar-collapsed');
     });
 
     // New chat
