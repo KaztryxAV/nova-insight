@@ -600,9 +600,23 @@
             </label>
           </div>
 
-          <div style="margin-top: 12px; display: flex; gap: 8px;">
+          <div class="settings-row" style="margin-top: 10px;">
+            <div>
+              <strong>Cheerful Login Sound Effect</strong>
+              <div class="settings-hint">Play a cheerful musical chime when logging in or unlocking your account</div>
+            </div>
+            <label class="switch-wrap">
+              <input type="checkbox" id="settingLoginSound" checked>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
             <button type="button" class="btn-subtle" id="testVoiceBtn">
               <span>🎧 Test Voice Sample</span>
+            </button>
+            <button type="button" class="btn-subtle" id="testLoginSoundBtn">
+              <span>✨ Preview Login Sound</span>
             </button>
           </div>
         </div>
