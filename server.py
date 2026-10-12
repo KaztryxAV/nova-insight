@@ -360,8 +360,8 @@ def generate_smart_simulated_response(prompt: str, model: str, history: List[Mes
 
     # 7. Thoughtful conversational direct response
     return (
-        f"I'm right here with you! Could you elaborate on what you'd like to do with **{p_raw}**? "
-        "I can explain the full concept, write code examples, or guide you step by step."
+        "⚠️ **Nova couldn't reach its AI engine just now**, so I can't answer that properly. "
+        "The free engine is sometimes busy. Please press **Regenerate** or send your message again in a few seconds."
     )
 
 async def pollinations_text(messages: List[Dict[str, str]], model: str = "openai-fast", timeout_s: float = 12.0, seed: Optional[int] = None) -> str:
@@ -482,17 +482,17 @@ async def stream_live_ai(messages: List[Message], system_prompt: Optional[str] =
 
     if thinking == "resourced":
         timeout = httpx.Timeout(connect=3.5, read=60.0, write=5.0, pool=5.0)
-        model_order = ["openai", "openai-fast"]
+        model_order = ["openai", "openai-fast", "openai-fast"]
     elif thinking == "instant":
         timeout = httpx.Timeout(connect=3.5, read=20.0, write=5.0, pool=5.0)
-        model_order = ["openai-fast", "openai"]
+        model_order = ["openai-fast", "openai-fast", "openai-fast"]
     else:
         timeout = httpx.Timeout(connect=3.5, read=20.0, write=5.0, pool=5.0)
-        model_order = ["openai-fast", "openai"]
+        model_order = ["openai-fast", "openai-fast", "openai-fast"]
     if read_timeout:
         timeout = httpx.Timeout(connect=3.5, read=read_timeout, write=5.0, pool=5.0)
-        model_order = list(model_order) * 3     # the free engine often fails mid-stream: allow several quick retries
-    for model_name in model_order:
+        model_order = ["openai-fast"] * 6       # the free engine often fails mid-stream: allow several quick retries
+    for _attempt, model_name in enumerate(model_order):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 payload = {
@@ -500,14 +500,16 @@ async def stream_live_ai(messages: List[Message], system_prompt: Optional[str] =
                     "model": model_name,
                     "stream": True
                 }
-                if read_timeout:
-                    # the free engine caches identical requests (including broken answers): vary every attempt
+                if read_timeout or _attempt > 0:
+                    # the free engine caches identical requests (including broken answers): vary every retry
                     payload["seed"] = random.randint(1, 2_000_000_000)
                 async with client.stream("POST", "https://text.pollinations.ai/", json=payload) as r:
                     if r.status_code != 200:
                         if read_timeout:
                             print('engine HTTP', r.status_code, (await r.aread())[:160])
                             await asyncio.sleep(3.0)     # engine busy (e.g. queue full): wait, then try again
+                        else:
+                            await asyncio.sleep(1.0)
                         continue
                     got_token = False
                     last_err = ''
