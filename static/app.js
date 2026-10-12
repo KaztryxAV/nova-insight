@@ -75,7 +75,8 @@
     fadeText: true,
     compact: false,
     enterToSend: true,
-    autoScroll: true
+    autoScroll: true,
+    loginSound: true
   };
 
   // --- DOM Elements ---
@@ -1238,6 +1239,7 @@
     setChk('settingCompact', settings.compact);
     setChk('settingEnterToSend', settings.enterToSend !== false);
     setChk('settingAutoScroll', settings.autoScroll !== false);
+    setChk('settingLoginSound', settings.loginSound !== false);
   }
 
   function collectNewSettings() {
@@ -1254,6 +1256,7 @@
     settings.compact = getChk('settingCompact', settings.compact);
     settings.enterToSend = getChk('settingEnterToSend', settings.enterToSend);
     settings.autoScroll = getChk('settingAutoScroll', settings.autoScroll);
+    settings.loginSound = getChk('settingLoginSound', settings.loginSound !== false);
   }
 
   // After the first reply finishes, ask the AI for a short title for the chat (like ChatGPT).
@@ -2034,6 +2037,119 @@
     saveConversations();
   }
 
+  // --- Cheerful Sound Effects & Audio Synthesis ---
+  let sharedAudioCtx = null;
+
+  function getAudioContext() {
+    try {
+      if (!sharedAudioCtx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) sharedAudioCtx = new AudioCtx();
+      }
+      return sharedAudioCtx;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function prepareAudio() {
+    try {
+      const ctx = getAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+    } catch (e) {}
+  }
+
+  function playLoginSound(force = false) {
+    if (!force && settings.loginSound === false) return;
+    try {
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+
+      const now = ctx.currentTime + 0.02; // Small 20ms lead-in
+
+      // Respect user voice volume setting, scaled smoothly
+      const userVol = Math.max(0.1, Math.min(1.0, (settings.voiceVolume !== undefined ? settings.voiceVolume : 100) / 100));
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(0.20 * userVol, now);
+
+      // Lowpass filter for smooth, warm studio chime tone (eliminates harsh high frequencies)
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(4400, now);
+      filter.Q.setValueAtTime(1.2, now);
+
+      masterGain.connect(filter);
+      filter.connect(ctx.destination);
+
+      // Sparkling, cheerful ascending major pentatonic chime
+      // C5 (523.25), E5 (659.25), G5 (783.99), C6 (1046.50), E6 (1318.51)
+      // Plus celestial galaxy sparkles: G6 (1567.98) and C7 (2093.00)
+      const chimes = [
+        { freq: 523.25, time: 0.00, dur: 0.45, gain: 0.60 }, // C5
+        { freq: 659.25, time: 0.07, dur: 0.50, gain: 0.75 }, // E5
+        { freq: 783.99, time: 0.14, dur: 0.55, gain: 0.85 }, // G5
+        { freq: 1046.50, time: 0.22, dur: 0.70, gain: 1.00 }, // C6
+        { freq: 1318.51, time: 0.28, dur: 0.75, gain: 0.70 }, // E6
+        { freq: 1567.98, time: 0.33, dur: 0.40, gain: 0.25 }, // G6 sparkle
+        { freq: 2093.00, time: 0.38, dur: 0.45, gain: 0.20 }  // C7 stardust
+      ];
+
+      chimes.forEach((n) => {
+        const oscSine = ctx.createOscillator();
+        const oscTri = ctx.createOscillator();
+        const noteGain = ctx.createGain();
+
+        const start = now + n.time;
+        const end = start + n.dur;
+
+        // Pure bell fundamental
+        oscSine.type = 'sine';
+        oscSine.frequency.setValueAtTime(n.freq, start);
+
+        // Gentle octave harmonic for marimba / celestial bell warmth
+        oscTri.type = 'triangle';
+        oscTri.frequency.setValueAtTime(n.freq, start);
+
+        // Envelope: smooth ramp attack (no click), long natural bell decay
+        noteGain.gain.setValueAtTime(0.0001, start);
+        noteGain.gain.linearRampToValueAtTime(n.gain * 0.5, start + 0.012);
+        noteGain.gain.exponentialRampToValueAtTime(0.0001, end);
+
+        oscSine.connect(noteGain);
+        oscTri.connect(noteGain);
+        noteGain.connect(masterGain);
+
+        oscSine.start(start);
+        oscTri.start(start);
+        oscSine.stop(end + 0.01);
+        oscTri.stop(end + 0.01);
+      });
+
+      // Warm bass foundation (C3 / 130.81 Hz) for fullness and satisfaction
+      const bassOsc = ctx.createOscillator();
+      const bassGain = ctx.createGain();
+      bassOsc.type = 'sine';
+      bassOsc.frequency.setValueAtTime(130.81, now);
+      bassGain.gain.setValueAtTime(0.0001, now);
+      bassGain.gain.linearRampToValueAtTime(0.22, now + 0.03);
+      bassGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
+
+      bassOsc.connect(bassGain);
+      bassGain.connect(masterGain);
+      bassOsc.start(now);
+      bassOsc.stop(now + 0.8);
+    } catch (e) {
+      console.warn('Login sound notice:', e);
+    }
+  }
+
+  window.playLoginSound = playLoginSound;
+
   // --- Speech Dictation & Audio Synthesis ---
   let activeDictationRec = null;
   let activeSpeechUtterances = [];
@@ -2755,6 +2871,7 @@
     if (authMode === 'create' && password.length < 4) { authMessage('Password must be at least 4 characters.'); return; }
 
     authBusy = true; el.btn.disabled = true;
+    prepareAudio();
     authMessage(authMode === 'login' ? 'Signing in...' : 'Creating your account...', true);
     try {
       const username = authName.toLowerCase();
@@ -2770,6 +2887,7 @@
         el.passInput.value = '';
         hideAuthGate();
         startSession();
+        playLoginSound();
         showToast(authMode === 'login' ? `Welcome back, ${userAccount.name}!` : `Welcome to Nova Insight, ${userAccount.name}!`);
       } else if (res.status === 401) {
         authMessage('Wrong password. Please try again.');
@@ -2993,6 +3111,7 @@
       loginStatusMsg.textContent = 'Verifying credentials...';
       loginStatusMsg.style.color = 'var(--text-secondary)';
     }
+    prepareAudio();
 
     try {
       const res = await fetch('/api/account/login', {
@@ -3006,6 +3125,7 @@
         userAccount = Object.assign({}, data.account, { isLoggedIn: true });
         updateUserAccountUI();
         if (accountModal) accountModal.style.display = 'none';
+        playLoginSound();
         showToast(`Welcome back, ${userAccount.name}! Logged in successfully.`);
       } else {
         if (loginStatusMsg) {
@@ -3045,6 +3165,7 @@
       regStatusMsg.textContent = 'Creating account...';
       regStatusMsg.style.color = 'var(--text-secondary)';
     }
+    prepareAudio();
 
     try {
       const res = await fetch('/api/account/register', {
@@ -3058,6 +3179,7 @@
         userAccount = Object.assign({}, data.account, { isLoggedIn: true });
         updateUserAccountUI();
         if (accountModal) accountModal.style.display = 'none';
+        playLoginSound();
         showToast(`Account created! Welcome to Nova Insight, ${userAccount.name}.`);
       } else {
         if (regStatusMsg) {
@@ -3882,6 +4004,13 @@
     }
     if (testVoiceBtn) {
       testVoiceBtn.addEventListener('click', testVoiceSample);
+    }
+    const testLoginSoundBtn = document.getElementById('testLoginSoundBtn');
+    if (testLoginSoundBtn) {
+      testLoginSoundBtn.addEventListener('click', () => {
+        playLoginSound(true);
+        showToast('Playing cheerful login chime ✨');
+      });
     }
 
     // Voice Assistant Mode triggers & controls
